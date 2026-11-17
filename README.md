@@ -73,7 +73,7 @@ stateDiagram-v2
 | `GITHUB_OWNER` | *(required)* | Repository & Project owner |
 | `GITHUB_REPO` | *(required)* | Target repository name |
 | `GITHUB_PROJECT_NUMBER` | *(required)* | GitHub Project v2 number (`gh project list --owner <owner>`) |
-| `GITHUB_ALLOWED_AUTHORS` | `GITHUB_OWNER` | Comma-separated usernames allowed to answer `Needs input` questions |
+| `GITHUB_ALLOWED_AUTHORS` | `GITHUB_OWNER,MennaCC` | Comma-separated usernames allowed to answer `Needs input` questions |
 | `REVIEW_BOT_LOGINS` | `kilo-code-bot[bot]` | Comma-separated code-review bot logins |
 | `REVIEW_CHECK_NAME` | `Kilo Code Review` | GitHub CheckRun name to wait for before reading review results |
 | `REQUIRE_ALL_CHECKS` | `true` | Wait for all other CI CheckRuns to pass before auto-merging |

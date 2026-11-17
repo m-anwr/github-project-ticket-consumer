@@ -54,7 +54,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       (() => {
         throw new Error('Missing required environment variable: GITHUB_PROJECT_NUMBER');
       })(),
-    githubAllowedAuthors: parseCsv(env.GITHUB_ALLOWED_AUTHORS, [githubOwner]),
+    githubAllowedAuthors: parseCsv(env.GITHUB_ALLOWED_AUTHORS, [githubOwner, 'MennaCC']),
     reviewBotLogins: parseCsv(env.REVIEW_BOT_LOGINS, ['kilo-code-bot[bot]']),
     reviewCheckName: env.REVIEW_CHECK_NAME?.trim() || 'Kilo Code Review',
     requireAllChecks: env.REQUIRE_ALL_CHECKS?.trim().toLowerCase() !== 'false',
