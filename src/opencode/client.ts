@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { log } from '../logger.ts';
 import type { DownloadedAsset, OpenCodeTicketStatus } from '../types.ts';
+import { postJson } from './http.ts';
 
 export interface OpenCodeConfig {
   serverUrl: string;
@@ -8,6 +9,13 @@ export interface OpenCodeConfig {
   modelId: string;
   username?: string;
   password?: string;
+  /**
+   * Inactivity timeout for the long-running message POST, in milliseconds.
+   * 0 (the default) means no timeout: an agent turn can legitimately take
+   * far longer than any fixed budget. See src/opencode/http.ts for why
+   * `fetch` cannot be used for that request.
+   */
+  messageTimeoutMs?: number;
 }
 
 type ApiMode = 'v1' | 'v2';
@@ -324,7 +332,15 @@ export class OpenCodeClient {
           }
         }
       },
-    ).catch(() => undefined);
+    ).catch((err) => {
+      // The server sends a keepalive roughly every ten seconds, so this stream
+      // should not die on its own. If it does, say so rather than failing
+      // silently: a dead stream means the idle event never arrives and the
+      // turn would never be seen as finished. Our own teardown abort is not
+      // a failure, so it stays quiet.
+      if (abortController.signal.aborted) return;
+      log.warn('opencode', `Event stream for session ${sessionId} ended unexpectedly`, err);
+    });
 
     try {
       let finalText = '';
@@ -390,13 +406,15 @@ export class OpenCodeClient {
           });
         }
 
-        const res = await fetch(this.buildUrl(`/session/${sessionId}/message`, directory), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...this.authHeaders(),
-          },
-          body: JSON.stringify({
+        // This POST holds its response open for the WHOLE agent turn: the v1
+        // dialect returns the assistant message synchronously, so the body
+        // does not arrive until the agent has finished its tool calls. That
+        // makes it unfit for `fetch`, whose 300 s body timeout would abort
+        // any turn longer than five minutes with an opaque "fetch failed".
+        // `postJson` (node:http) has no such default.
+        const res = await postJson({
+          url: this.buildUrl(`/session/${sessionId}/message`, directory),
+          body: {
             // The model MUST be nested under `model`. OpenCode ignores flat
             // `providerID`/`modelID` fields and silently falls back to the
             // server's default model instead of the one configured here.
@@ -405,17 +423,24 @@ export class OpenCodeClient {
               modelID: this.cfg.modelId,
             },
             parts,
-          }),
+          },
+          headers: this.authHeaders(),
+          timeoutMs: this.cfg.messageTimeoutMs,
         });
 
-        if (!res.ok) {
-          throw new Error(`OpenCode message failed (${res.status}): ${await res.text()}`);
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`OpenCode message failed (${res.status}): ${res.text}`);
         }
 
-        const msgResult = (await res.json()) as {
+        let msgResult: {
           error?: string | { message?: string };
           parts?: MessagePart[];
         };
+        try {
+          msgResult = JSON.parse(res.text);
+        } catch {
+          throw new Error(`OpenCode message returned invalid JSON: ${res.text.slice(0, 500)}`);
+        }
         if (msgResult.error) {
           const errMsg =
             typeof msgResult.error === 'string'

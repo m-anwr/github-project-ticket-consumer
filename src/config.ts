@@ -27,6 +27,16 @@ function parsePositiveInt(val: string | undefined, fallback: number, key: string
   return parsed;
 }
 
+/** Like parsePositiveInt, but 0 is allowed and means "no timeout". */
+function parseNonNegativeInt(val: string | undefined, fallback: number, key: string): number {
+  if (!val?.trim()) return fallback;
+  const parsed = Number.parseInt(val, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Environment variable ${key} must be a non-negative integer, got "${val}"`);
+  }
+  return parsed;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const envFile = resolve(process.cwd(), '.env');
   if (env === process.env && existsSync(envFile) && typeof process.loadEnvFile === 'function') {
@@ -63,6 +73,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     opencodeModelId: requireEnv(env, 'OPENCODE_MODEL_ID'),
     opencodeServerPassword: env.OPENCODE_SERVER_PASSWORD?.trim() || undefined,
     opencodeServerUsername: env.OPENCODE_SERVER_USERNAME?.trim() || 'opencode',
+    opencodeMessageTimeoutMs: parseNonNegativeInt(
+      env.OPENCODE_MESSAGE_TIMEOUT_MS,
+      0,
+      'OPENCODE_MESSAGE_TIMEOUT_MS',
+    ),
     repoLocalPath: resolve(requireEnv(env, 'REPO_LOCAL_PATH')),
     baseBranch: env.BASE_BRANCH?.trim() || 'main',
     dataDir: resolve(env.DATA_DIR?.trim() || './data'),

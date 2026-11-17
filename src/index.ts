@@ -28,6 +28,7 @@ async function main(): Promise<void> {
     modelId: config.opencodeModelId,
     username: config.opencodeServerUsername,
     password: config.opencodeServerPassword,
+    messageTimeoutMs: config.opencodeMessageTimeoutMs,
   });
 
   await projects.init();

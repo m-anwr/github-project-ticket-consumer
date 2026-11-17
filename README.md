@@ -82,6 +82,7 @@ stateDiagram-v2
 | `OPENCODE_MODEL_ID` | *(required)* | Model ID |
 | `OPENCODE_SERVER_USERNAME` | `opencode` | Basic auth username (when `OPENCODE_SERVER_PASSWORD` is set) |
 | `OPENCODE_SERVER_PASSWORD` | *(empty)* | Optional OpenCode server basic auth password |
+| `OPENCODE_MESSAGE_TIMEOUT_MS` | `0` | Inactivity timeout for the long-running OpenCode message POST. `0` = no timeout. Keep it at `0` (or well above your longest agent turn): OpenCode holds that response open for the whole turn, so a client-side cap abandons a run that is still working. Node's `fetch` would abort it after 300 s. |
 | `REPO_LOCAL_PATH` | *(required)* | Local clone of the target repository |
 | `BASE_BRANCH` | `main` | Base branch for worktrees and PRs |
 | `DATA_DIR` | `./data` | Runtime directory for `state.db`, `worktrees/`, and `assets/` |
