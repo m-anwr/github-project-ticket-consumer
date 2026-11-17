@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ghCliStatus } from '../src/ghcli.ts';
 import {
+  appendPrReport,
   buildHumanReplyPrompt,
   buildInitialPrompt,
   buildPrBody,
@@ -227,6 +228,51 @@ The WhatsApp number is a placeholder.`,
     const fallback = buildPrBody({ status: 'unknown', rawText: 'some text' }, 97);
     assert.match(fallback, /some text/);
     assert.match(fallback, /Closes #97/);
+  });
+});
+
+describe('appendPrReport', () => {
+  const outcome = {
+    status: 'ready_for_review' as const,
+    rawText: 'Fixed the attribution plugin and the form error message.',
+  };
+
+  it('appends the round report under a heading', () => {
+    const body = appendPrReport('Original report.\n\nCloses #97', outcome, 97, 2);
+    assert.match(body, /Original report\./);
+    assert.match(body, /Closes #97/);
+    assert.match(body, /## Review fixes \(round 2\)/);
+    assert.match(body, /Fixed the attribution plugin/);
+  });
+
+  it('replaces the section when the same round runs again', () => {
+    const once = appendPrReport('Original report.\n\nCloses #97', outcome, 97, 2);
+    const twice = appendPrReport(once, outcome, 97, 2);
+    assert.equal(
+      twice.match(/## Review fixes \(round 2\)/g)?.length,
+      1,
+      'the round section must not be duplicated',
+    );
+    assert.equal(twice, once);
+  });
+
+  it('keeps the machine-readable block out of the description', () => {
+    const body = appendPrReport(
+      'Original.',
+      {
+        status: 'ready_for_review',
+        rawText: 'Did the work.\n\n<ticket-status>\n{"status":"ready_for_review"}\n</ticket-status>',
+      },
+      97,
+      2,
+    );
+    assert.doesNotMatch(body, /ticket-status/);
+  });
+
+  it('falls back to a full description when there is none yet', () => {
+    const body = appendPrReport('', outcome, 97, 1);
+    assert.match(body, /Fixed the attribution plugin/);
+    assert.match(body, /Closes #97/);
   });
 });
 

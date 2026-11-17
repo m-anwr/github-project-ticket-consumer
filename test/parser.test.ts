@@ -76,6 +76,18 @@ Done.
     const out = parseTicketStatus('Just some text');
     assert.equal(out.status, 'unknown');
   });
+
+  it('strips the status block even when its JSON is unusable', () => {
+    const out = parseTicketStatus(`
+Here is what I did.
+<ticket-status>
+{ this is not json }
+</ticket-status>`);
+    assert.equal(out.status, 'unknown');
+    assert.equal(out.rawText, 'Here is what I did.');
+    // the machine-readable block must never reach a pull request description
+    assert.doesNotMatch(out.rawText, /ticket-status/);
+  });
 });
 
 describe('extractAssetUrls', () => {

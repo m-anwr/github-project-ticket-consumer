@@ -214,6 +214,18 @@ ${STATUS_CONTRACT}`;
 }
 
 /**
+ * Strip the machine-readable status block from a report.
+ *
+ * `parseTicketStatus` already removes it, but the report ends up in a pull
+ * request description that people read, so the guarantee is made here too.
+ */
+function stripStatusBlock(text: string | undefined): string {
+  if (!text) return '';
+  const at = text.search(/<ticket-status>/i);
+  return (at >= 0 ? text.slice(0, at) : text).trim();
+}
+
+/**
  * The agent's own report of the work, without the closing line.
  *
  * This is the agent's final message with the machine-readable block removed:
@@ -222,7 +234,7 @@ ${STATUS_CONTRACT}`;
  * compress, so it is the fallback, not the source.
  */
 export function buildPrReport(outcome: OpenCodeTicketStatus): string {
-  const report = outcome.rawText?.trim();
+  const report = stripStatusBlock(outcome.rawText);
   const summary =
     outcome.status === 'ready_for_review' ? outcome.prSummary?.trim() : undefined;
   return report || summary || 'Automated implementation by OpenCode.';
@@ -234,4 +246,28 @@ export function buildPrReport(outcome: OpenCodeTicketStatus): string {
  */
 export function buildPrBody(outcome: OpenCodeTicketStatus, issueNumber: number): string {
   return `${buildPrReport(outcome)}\n\nCloses #${issueNumber}`;
+}
+
+/**
+ * Append the agent's report for a review round to the pull request
+ * description.
+ *
+ * The section for a round is replaced rather than appended to, so a repeated
+ * run for the same round does not duplicate it.
+ */
+export function appendPrReport(
+  current: string,
+  outcome: OpenCodeTicketStatus,
+  issueNumber: number,
+  round: number,
+): string {
+  const existing = current.trim();
+  if (!existing) return buildPrBody(outcome, issueNumber);
+  const heading = `## Review fixes (round ${round})`;
+  const report = buildPrReport(outcome);
+  const already = existing.indexOf(heading);
+  if (already >= 0) {
+    return `${existing.slice(0, already).trimEnd()}\n\n${heading}\n\n${report}`;
+  }
+  return `${existing}\n\n${heading}\n\n${report}`;
 }

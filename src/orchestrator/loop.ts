@@ -9,10 +9,10 @@ import { log } from '../logger.ts';
 import type { OpenCodeClient } from '../opencode/client.ts';
 import { LANES, type Config, type OpenCodeTicketStatus, type ProjectItem } from '../types.ts';
 import {
+  appendPrReport,
   buildHumanReplyPrompt,
   buildInitialPrompt,
   buildPrBody,
-  buildPrReport,
   buildReviewFindingsPrompt,
   type PromptContext,
 } from './prompts.ts';
@@ -474,10 +474,8 @@ export class TicketOrchestrator {
     outcome: OpenCodeTicketStatus,
     issueNumber: number,
   ): string {
-    const existing = current.trim();
-    if (!existing) return buildPrBody(outcome, issueNumber);
     const round = (this.deps.store.get(issueNumber)?.reviewIterations ?? 0) + 1;
-    return `${existing}\n\n## Review fixes (round ${round})\n\n${buildPrReport(outcome)}`;
+    return appendPrReport(current, outcome, issueNumber, round);
   }
 
   /**

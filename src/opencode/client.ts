@@ -88,7 +88,10 @@ export function parseTicketStatus(text: string): OpenCodeTicketStatus {
     // Fall through to unknown
   }
 
-  return { status: 'unknown', rawText: text };
+  // The report is the text before the block, whatever the block contained:
+  // the `<ticket-status>` JSON is machine-readable and must never end up in
+  // a pull request description.
+  return { status: 'unknown', rawText };
 }
 
 export class OpenCodeClient {
