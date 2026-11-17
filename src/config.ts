@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Config, ManualMergeBehavior, MergeMethod } from './types.ts';
+import type { CommentDeliveryMode, Config, ManualMergeBehavior, MergeMethod } from './types.ts';
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
   const val = env[key]?.trim();
@@ -54,6 +54,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid MANUAL_MERGE_BEHAVIOR: ${manualMergeBehavior}`);
   }
 
+  const commentDelivery = (env.COMMENT_DELIVERY?.trim() || 'agent') as CommentDeliveryMode;
+  if (!['agent', 'inline'].includes(commentDelivery)) {
+    throw new Error(`Invalid COMMENT_DELIVERY: ${commentDelivery}`);
+  }
+
   const githubOwner = requireEnv(env, 'GITHUB_OWNER');
 
   return {
@@ -87,5 +92,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     manualMergeBehavior,
     manualMergeLabel: env.MANUAL_MERGE_LABEL?.trim() || 'manual merge',
     readyToMergeLabel: env.READY_TO_MERGE_LABEL?.trim() || 'ready to merge',
+    commentDelivery,
   };
 }

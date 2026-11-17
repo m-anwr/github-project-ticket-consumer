@@ -1,4 +1,10 @@
-import type { DownloadedAsset, InlineReviewComment, IssueComment, ProjectItem } from '../types.ts';
+import type {
+  CommentDeliveryMode,
+  DownloadedAsset,
+  InlineReviewComment,
+  IssueComment,
+  ProjectItem,
+} from '../types.ts';
 
 const STATUS_CONTRACT = `
 When you finish your turn, you MUST end your final message with a single <ticket-status> JSON block:
@@ -21,10 +27,23 @@ When you finish your turn, you MUST end your final message with a single <ticket
 </ticket-status>
 `.trim();
 
+/**
+ * Where the prompt's GitHub facts come from.
+ *
+ * In `agent` mode the daemon passes identifiers only and the agent fetches the
+ * comments itself, so the prompt has to name the repository to ask.
+ */
+export interface PromptContext {
+  mode: CommentDeliveryMode;
+  owner: string;
+  repo: string;
+  issueNumber: number;
+}
+
 function formatAssetsNote(assets: DownloadedAsset[]): string {
   if (assets.length === 0) return '';
-  const list = assets.map((a) => `- ${a.filename} (${a.mimeType}) saved at ${a.filePath}`).join('\n');
-  return `\nAttached assets from GitHub:\n${list}\n`;
+  const list = assets.map((a) => `- ${a.filename} (${a.mimeType}) saved at ${a.filePath}`);
+  return `\nAttached assets from GitHub:\n${list.join('\n')}\n`;
 }
 
 export function buildInitialPrompt(
@@ -52,7 +71,26 @@ ${STATUS_CONTRACT}`;
 export function buildHumanReplyPrompt(
   comments: IssueComment[],
   assets: DownloadedAsset[],
+  ctx: PromptContext,
 ): string {
+  if (ctx.mode === 'agent') {
+    const ids = comments.map((c) => c.id);
+    return `The user replied on the GitHub ticket (issue #${ctx.issueNumber}).
+
+Read the reply yourself -- do not rely on a transcription of it:
+
+  gh api repos/${ctx.owner}/${ctx.repo}/issues/${ctx.issueNumber}/comments --paginate
+
+Only the comment(s) with these ids are new replies (the newest one is the reply you need):
+${ids.length > 0 ? ids.join(', ') : '(none)'}
+${formatAssetsNote(assets)}
+Continue working on the ticket using this input. Commit your changes on the current branch when done.
+
+If \`gh\` is unavailable or unauthenticated, say so and stop -- do not guess what the user said.
+
+${STATUS_CONTRACT}`;
+  }
+
   const formatted = comments
     .map((c) => `Comment by @${c.author} at ${c.createdAt}:\n${c.body}`)
     .join('\n\n---\n\n');
@@ -68,9 +106,40 @@ ${STATUS_CONTRACT}`;
 
 export function buildReviewFindingsPrompt(
   prNumber: number,
-  summary: string,
-  inlineComments: InlineReviewComment[],
+  ctx: PromptContext,
+  options: {
+    headSha: string;
+    botLogin: string;
+    summaryCommentId: number | null;
+    inlineComments: InlineReviewComment[];
+    summary: string;
+  },
 ): string {
+  if (ctx.mode === 'agent') {
+    const ids = options.inlineComments.map((c) => c.id);
+    return `Kilo Code reviewed PR #${prNumber} and left findings. Read them yourself -- do not rely on a transcription:
+
+  gh api repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}/comments --paginate
+  gh api repos/${ctx.owner}/${ctx.repo}/issues/${prNumber}/comments --paginate
+
+Only these review comments are in scope -- they are the ones ${options.botLogin} posted against the current head ${options.headSha}. Findings from earlier rounds are out of scope:
+${ids.length > 0 ? ids.join(', ') : '(no inline comments)'}
+${options.summaryCommentId !== null ? `The review summary is issue comment id ${options.summaryCommentId}.` : ''}
+
+You have the working tree, so read the files and the diff yourself -- you do not need diff hunks quoted back to you.
+
+Instructions:
+1. Validate EACH finding against the actual codebase -- do not blindly apply changes if a finding is a false positive, already handled, or out of scope.
+2. Fix all valid issues and verify with tests/typecheck.
+3. Commit and push your fixes to the current PR branch (or if all findings were invalid/false positives, explain why in your summary).
+
+If \`gh\` is unavailable or unauthenticated, say so and stop -- do not guess what the reviewer wrote.
+
+${STATUS_CONTRACT}`;
+  }
+
+  const summary = options.summary;
+  const inlineComments = options.inlineComments;
   const inlineText =
     inlineComments.length > 0
       ? inlineComments

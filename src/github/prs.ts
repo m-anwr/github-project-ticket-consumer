@@ -155,6 +155,7 @@ export class GitHubPRsClient {
         return {
           status: 'has_findings',
           summary: `CI check(s) failed: ${otherFailed.map((c) => `${c.name} (${c.conclusion})`).join(', ')}`,
+          summaryCommentId: null,
           inlineComments: [],
         };
       }
@@ -219,6 +220,7 @@ export class GitHubPRsClient {
     return {
       status: 'has_findings',
       summary: parsed.currentSection,
+      summaryCommentId: kiloSummaryComment.id,
       inlineComments,
     };
   }

@@ -12,6 +12,20 @@ export type LaneName = (typeof LANES)[keyof typeof LANES];
 export type MergeMethod = 'squash' | 'merge' | 'rebase';
 export type ManualMergeBehavior = 'keep_in_review' | 'move_to_done';
 
+/**
+ * How review findings and human replies reach the agent.
+ *
+ * `agent` - the daemon passes comment IDs and the agent fetches the comments
+ * itself with the `gh` CLI. The agent sees the real comment, not a
+ * transcription of it, and the prompt stays small.
+ *
+ * `inline` - the daemon quotes the comment bodies (and diff hunks) into the
+ * prompt. Self-contained, but it re-serialises what the agent could read
+ * directly, and it bloats the prompt with diff hunks the agent can regenerate
+ * from its own working tree.
+ */
+export type CommentDeliveryMode = 'agent' | 'inline';
+
 export interface Config {
   githubToken: string;
   githubOwner: string;
@@ -40,6 +54,12 @@ export interface Config {
   manualMergeBehavior: ManualMergeBehavior;
   manualMergeLabel: string;
   readyToMergeLabel: string;
+  /**
+   * How review findings and human replies reach the agent. `agent` requires
+   * the `gh` CLI to be available to the agent; the daemon falls back to
+   * `inline` automatically when it is not.
+   */
+  commentDelivery: CommentDeliveryMode;
 }
 
 export interface ProjectItem {
@@ -97,7 +117,13 @@ export interface InlineReviewComment {
 export type KiloCodeReviewEvaluation =
   | { status: 'pending'; reason: string }
   | { status: 'clean'; summary: string }
-  | { status: 'has_findings'; summary: string; inlineComments: InlineReviewComment[] };
+  | {
+      status: 'has_findings';
+      summary: string;
+      /** Id of the review bot's summary comment, so the agent can fetch it. */
+      summaryCommentId: number | null;
+      inlineComments: InlineReviewComment[];
+    };
 
 export type OpenCodeTicketStatus =
   | { status: 'needs_input'; question: string }

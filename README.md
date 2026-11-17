@@ -40,6 +40,16 @@ stateDiagram-v2
 3. **GitHub Project v2** with a `Status` field containing these exact 6 lanes:
    `Backlog`, `Ready`, `In progress`, `Needs input`, `In review`, `Done`.
 4. **GitHub Token** (PAT with `repo`, `project`, and `read:org` scopes if using an org project).
+5. **The `gh` CLI**, authenticated for the target repository — only needed for
+   `COMMENT_DELIVERY=agent` (the default), where the agent fetches the review
+   comments and the human replies itself instead of the daemon quoting them
+   into the prompt. The daemon checks it at startup and falls back to
+   `COMMENT_DELIVERY=inline` when it is missing or unauthenticated, so this is
+   a soft requirement rather than a hard one.
+
+   The `gh` the **agent** uses is the one on the agent server's `PATH`, not the
+   daemon's: they must resolve to the same binary and the same
+   `~/.config/gh/hosts.yml`.
 
 ## Quick Start
 
@@ -92,6 +102,31 @@ stateDiagram-v2
 | `MANUAL_MERGE_BEHAVIOR` | `keep_in_review` | `keep_in_review` or `move_to_done` when `manual merge` label is present |
 | `MANUAL_MERGE_LABEL` | `manual merge` | Label that disables auto-merging |
 | `READY_TO_MERGE_LABEL` | `ready to merge` | Label added in `keep_in_review` mode once review passes |
+| `COMMENT_DELIVERY` | `agent` | How review findings and human replies reach the agent. `agent` = the daemon passes comment ids and the agent fetches the comments itself with `gh`; `inline` = the daemon quotes the comment bodies and diff hunks into the prompt. |
+
+## How the agent receives comments
+
+`COMMENT_DELIVERY` decides what the daemon puts in the prompt when it has to
+tell the agent about a review or a human reply.
+
+| | `agent` (default) | `inline` |
+|---|---|---|
+| Prompt carries | the repo slug, the comment ids, the head SHA | the full comment bodies and diff hunks |
+| Prompt size | fixed, regardless of review size | grows with the review — a 3-finding review was ~26 KB, of which ~22 KB was diff hunks |
+| Agent sees | the real comment, fetched with `gh` | a transcription of it |
+| Needs `gh` on the agent's PATH | yes | no |
+| Self-contained | no | yes |
+
+Both modes keep the same **selection**: the daemon decides which comments are
+in scope (the review bot's own comments, posted against the current head SHA),
+so a later round never re-fixes an earlier round's findings. Only the
+transport of the content differs.
+
+The daemon checks `gh` at startup. If it is missing or unauthenticated it logs
+a warning and falls back to `inline` for the run, rather than failing every
+review round. The prompt also tells the agent to stop and report if `gh` turns
+out to be unusable for it, so a mismatch between the daemon's environment and
+the agent's fails loudly instead of silently.
 
 ## Running on a VPS (systemd)
 

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { loadConfig } from './config.ts';
 import { TicketStore } from './db/store.ts';
+import { ghCliStatus } from './ghcli.ts';
 import { WorktreeManager } from './git/worktree.ts';
 import { GitHubClient } from './github/client.ts';
 import { GitHubIssuesClient } from './github/issues.ts';
@@ -37,6 +38,21 @@ async function main(): Promise<void> {
   );
   console.log(
     `[startup] OpenCode=${config.opencodeServerUrl} model=${config.opencodeProviderId}/${config.opencodeModelId} poll=${config.pollIntervalMs}ms manualMerge=${config.manualMergeBehavior}`,
+  );
+
+  // `COMMENT_DELIVERY=agent` asks the AGENT to fetch the comments itself with
+  // the `gh` CLI instead of the daemon quoting them into the prompt. Check
+  // the CLI up front and fall back to quoting them inline when it is not
+  // usable -- otherwise every review round would fail on the fetch.
+  const ghCli = ghCliStatus();
+  if (config.commentDelivery === 'agent' && !ghCli.usable) {
+    console.warn(
+      `[startup] COMMENT_DELIVERY=agent needs the gh CLI in the agent's environment, but ${ghCli.detail}. Falling back to COMMENT_DELIVERY=inline.`,
+    );
+    config.commentDelivery = 'inline';
+  }
+  console.log(
+    `[startup] commentDelivery=${config.commentDelivery} gh=${ghCli.detail}`,
   );
 
   const orchestrator = new TicketOrchestrator({

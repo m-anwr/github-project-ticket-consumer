@@ -12,6 +12,7 @@ import {
   buildHumanReplyPrompt,
   buildInitialPrompt,
   buildReviewFindingsPrompt,
+  type PromptContext,
 } from './prompts.ts';
 
 export interface OrchestratorDeps {
@@ -31,6 +32,20 @@ export class TicketOrchestrator {
 
   constructor(deps: OrchestratorDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * Where the agent should read comments from, and how it should be told
+   * about them. In `agent` mode the prompt names the repository and the
+   * comment ids, and the agent fetches the comments itself with `gh`.
+   */
+  private promptContext(issueNumber: number): PromptContext {
+    return {
+      mode: this.deps.config.commentDelivery,
+      owner: this.deps.config.githubOwner,
+      repo: this.deps.config.githubRepo,
+      issueNumber,
+    };
   }
 
   private pollCount = 0;
@@ -175,7 +190,11 @@ export class TicketOrchestrator {
       const assetsDir = join(config.dataDir, 'assets', `issue-${item.issueNumber}`);
       const combinedMarkdown = newComments.map((c) => c.body).join('\n');
       const assets = await issues.downloadAssets(combinedMarkdown, assetsDir);
-      const prompt = buildHumanReplyPrompt(newComments, assets);
+      const prompt = buildHumanReplyPrompt(
+        newComments,
+        assets,
+        this.promptContext(item.issueNumber),
+      );
       const outcome = await opencode.sendPromptAndWait(sessionId, worktreePath, prompt, assets);
       await this.handleBuildOutcome(item, sessionId, worktreePath, branchName, outcome);
     } catch (err) {
@@ -239,7 +258,13 @@ export class TicketOrchestrator {
           `Issue #${item.issueNumber}: ${item.issueTitle}`,
         ));
 
-      const prompt = buildReviewFindingsPrompt(pr.number, review.summary, review.inlineComments);
+      const prompt = buildReviewFindingsPrompt(pr.number, this.promptContext(item.issueNumber), {
+        headSha: pr.head.sha,
+        botLogin: config.reviewBotLogins.join(', '),
+        summaryCommentId: review.summaryCommentId,
+        inlineComments: review.inlineComments,
+        summary: review.summary,
+      });
       await opencode.sendPromptAndWait(sessionId, record.worktreePath, prompt);
 
       await worktrees.ensureCommittedAndPushed(
