@@ -26,6 +26,11 @@ export interface Config {
   opencodeModelId: string;
   opencodeServerPassword?: string;
   opencodeServerUsername: string;
+  /**
+   * Inactivity timeout for the long-running OpenCode message POST, in ms.
+   * 0 means no timeout.
+   */
+  opencodeMessageTimeoutMs: number;
   repoLocalPath: string;
   baseBranch: string;
   dataDir: string;

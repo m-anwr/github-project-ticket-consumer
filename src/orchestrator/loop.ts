@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { TicketStore } from '../db/store.ts';
+import { describeError } from '../errors.ts';
 import type { WorktreeManager } from '../git/worktree.ts';
 import type { GitHubIssuesClient } from '../github/issues.ts';
 import type { GitHubProjectsClient } from '../github/projects.ts';
@@ -366,7 +367,10 @@ export class TicketOrchestrator {
 
   private async escalateError(item: ProjectItem, err: unknown): Promise<void> {
     const { store, projects, issues } = this.deps;
-    const message = err instanceof Error ? err.message : String(err);
+    // Include the cause chain: `fetch` reports every transport failure as
+    // "fetch failed", and the actionable detail (UND_ERR_BODY_TIMEOUT,
+    // ECONNREFUSED, ...) only exists on `err.cause`.
+    const message = describeError(err);
     console.error(`[error] #${item.issueNumber} failed:`, message);
 
     const commentId = await issues.postComment(
