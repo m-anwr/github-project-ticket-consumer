@@ -1,0 +1,117 @@
+# GitHub Project Ticket Consumer
+
+A zero-dependency TypeScript/Node.js daemon that polls a **GitHub Project v2** board, orchestrates **OpenCode** coding sessions in isolated `git worktree`s, handles human-in-the-loop Q&A (including image/file attachments), validates and fixes **Kilo Code** PR review findings, and auto-merges clean PRs.
+
+## Workflow
+
+```mermaid
+stateDiagram-v2
+    [*] --> Backlog: Draft ticket
+    Backlog --> Ready: Move to Ready
+    Ready --> InProgress: Create worktree + OpenCode session
+    InProgress --> NeedsInput: OpenCode needs clarification
+    NeedsInput --> InProgress: Human replies (+ assets)
+    InProgress --> InReview: Commit, push & open PR
+    InReview --> InReview: Kilo Code findings -> OpenCode validates & fixes
+    InReview --> NeedsInput: Max review iterations reached
+    InReview --> Done: Clean review -> Auto-merge (unless "manual merge")
+```
+
+1. **Backlog**: Ignored while you draft and refine tickets.
+2. **Ready**: Picks up the ticket, creates an isolated `git worktree` (`ticket/<num>-<slug>`), starts an OpenCode session, and moves the card to **In progress**.
+3. **Needs input**: If OpenCode needs clarification, it posts a comment on the issue and moves the card to **Needs input**. When an allowed human user replies (with text and/or uploaded images or files), the service downloads the attachments, forwards them to the *same* OpenCode session, and moves the card back to **In progress**.
+4. **In review**: Ensures changes are committed and pushed, opens a PR (`Closes #<num>`), and waits for the **`Kilo Code Review`** CheckRun and `kilo-code-bot[bot]` summary/inline comments:
+   - **Findings**: Sends the summary and all inline diff comments to OpenCode with instructions to validate each finding first, fix valid issues, and push.
+   - **Clean**: Auto-merges the PR, cleans up the worktree, and moves the card to **Done**—unless the ticket has the `manual merge` label:
+     - `keep_in_review` (default): Adds the `ready to merge` label, comments on the issue, and waits in **In review** until you merge the PR manually, then moves it to **Done**.
+     - `move_to_done`: Moves the ticket to **Done** immediately while leaving the PR open for you to merge.
+
+## Features
+
+- **Zero external npm dependencies**: Runs directly on Node.js `>= 22.18.0` using native TypeScript execution, `node:sqlite`, `fetch`, and `node:test`.
+- **OpenCode v1 & v2 compatible**: Automatically detects OpenCode v1 (`/session`, `/session/{id}/message`, `/event`) and v2 (`/api/session`, `/api/session/{id}/prompt`, `/api/event`) servers.
+- **Git worktree isolation**: Each active ticket runs in its own worktree under `DATA_DIR/worktrees/issue-<number>`, allowing multiple tickets to be in `Needs input` or `In review` simultaneously without branch conflicts.
+- **SQLite state persistence**: Resumes cleanly across restarts (`DATA_DIR/state.db`).
+
+## Prerequisites
+
+1. **Node.js `>= 22.18.0`** (tested on Node 26) and **`git`**.
+2. **OpenCode server** running on the same machine as this consumer (so both share access to the `git worktree` directories).
+3. **GitHub Project v2** with a `Status` field containing these exact 6 lanes:
+   `Backlog`, `Ready`, `In progress`, `Needs input`, `In review`, `Done`.
+4. **GitHub Token** (PAT with `repo`, `project`, and `read:org` scopes if using an org project).
+
+## Quick Start
+
+1. **Clone this repository** and **clone your target repository**:
+   ```bash
+   git clone https://github.com/your-org/github-project-ticket-consumer.git
+   cd github-project-ticket-consumer
+
+   git clone git@github.com:your-org/your-repo.git /var/lib/ticket-consumer/repo
+   ```
+
+2. **Configure `.env`**:
+   ```bash
+   cp .env.example .env
+   ```
+   Set at minimum:
+   - `GITHUB_TOKEN`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_PROJECT_NUMBER`, `GITHUB_ALLOWED_AUTHORS`
+   - `OPENCODE_SERVER_URL`, `OPENCODE_PROVIDER_ID`, `OPENCODE_MODEL_ID`
+   - `REPO_LOCAL_PATH` (path to your cloned target repository)
+
+3. **Run**:
+   ```bash
+   node src/index.ts
+   ```
+
+## Configuration Reference
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GITHUB_TOKEN` | *(required)* | GitHub token with `repo` and `project` scopes |
+| `GITHUB_OWNER` | *(required)* | Repository & Project owner |
+| `GITHUB_REPO` | *(required)* | Target repository name |
+| `GITHUB_PROJECT_NUMBER` | *(required)* | GitHub Project v2 number (`gh project list --owner <owner>`) |
+| `GITHUB_ALLOWED_AUTHORS` | `GITHUB_OWNER` | Comma-separated usernames allowed to answer `Needs input` questions |
+| `REVIEW_BOT_LOGINS` | `kilo-code-bot[bot]` | Comma-separated code-review bot logins |
+| `REVIEW_CHECK_NAME` | `Kilo Code Review` | GitHub CheckRun name to wait for before reading review results |
+| `REQUIRE_ALL_CHECKS` | `true` | Wait for all other CI CheckRuns to pass before auto-merging |
+| `OPENCODE_SERVER_URL` | `http://127.0.0.1:4096` | OpenCode server base URL |
+| `OPENCODE_PROVIDER_ID` | *(required)* | Provider ID (e.g., `anthropic`, `kilo`, `openai`) |
+| `OPENCODE_MODEL_ID` | *(required)* | Model ID |
+| `OPENCODE_SERVER_USERNAME` | `opencode` | Basic auth username (when `OPENCODE_SERVER_PASSWORD` is set) |
+| `OPENCODE_SERVER_PASSWORD` | *(empty)* | Optional OpenCode server basic auth password |
+| `REPO_LOCAL_PATH` | *(required)* | Local clone of the target repository |
+| `BASE_BRANCH` | `main` | Base branch for worktrees and PRs |
+| `DATA_DIR` | `./data` | Runtime directory for `state.db`, `worktrees/`, and `assets/` |
+| `POLL_INTERVAL_MS` | `15000` | Polling interval in milliseconds |
+| `MAX_REVIEW_ITERATIONS` | `5` | Max automated review-fix rounds before escalating to `Needs input` |
+| `AUTO_MERGE_METHOD` | `squash` | `squash`, `merge`, or `rebase` |
+| `MANUAL_MERGE_BEHAVIOR` | `keep_in_review` | `keep_in_review` or `move_to_done` when `manual merge` label is present |
+| `MANUAL_MERGE_LABEL` | `manual merge` | Label that disables auto-merging |
+| `READY_TO_MERGE_LABEL` | `ready to merge` | Label added in `keep_in_review` mode once review passes |
+
+## Running on a VPS (systemd)
+
+```ini
+[Unit]
+Description=GitHub Project Ticket Consumer
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/github-project-ticket-consumer
+ExecStart=/usr/bin/node src/index.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Tests
+
+```bash
+node --test test/*.test.ts
+```

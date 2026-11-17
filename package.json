@@ -1,0 +1,15 @@
+{
+  "name": "github-project-ticket-consumer",
+  "version": "1.0.0",
+  "description": "Polls a GitHub Project v2 board and orchestrates OpenCode sessions, human Q&A, Kilo Code PR reviews, and auto-merging.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
