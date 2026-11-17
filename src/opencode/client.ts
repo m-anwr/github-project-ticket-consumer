@@ -93,35 +93,97 @@ export class OpenCodeClient {
     return url.toString();
   }
 
+  /**
+   * Probe the server and decide which API dialect to speak.
+   *
+   * OpenCode 1.19.x serves BOTH the classic `/session` API and the newer
+   * `/api/session` API from the same process, so the mere presence of
+   * `/api/session` does not mean the server speaks v2. Probing only for
+   * existence misdetects a v1 server as v2, after which every call uses the
+   * wrong payload shape (and the v2 preview on 1.19.x never returns an
+   * assistant message, so the run would hang until it times out).
+   *
+   * The classic `/session` dialect is the one that is fully implemented on
+   * OpenCode 1.x, so we prefer it whenever its route exists. A genuine
+   * OpenCode 2.x server does not expose `/session/{id}/message` at all: the
+   * route falls through to the SPA and answers `text/html`, which is how we
+   * detect its absence and fall through to the v2 dialect.
+   *
+   * Each probe posts a body that is valid *for that dialect*, so the server
+   * validates the payload before it looks anything up:
+   *   - v1 (`POST /session/{id}/message`) answers with a `name`/`data`
+   *     envelope ("UnknownError" for an unknown session).
+   *   - v2 (`POST /api/session/{id}/prompt`) answers with a `_tag`/`kind`
+   *     envelope ("InvalidRequestError" for an unknown session).
+   */
   async detectMode(): Promise<ApiMode> {
     if (this.detectedMode) return this.detectedMode;
 
-    const v2Res = await fetch(this.buildUrl('/api/session'), {
-      headers: this.authHeaders(),
-    }).catch(() => null);
-    if (v2Res?.ok && v2Res.headers.get('content-type')?.includes('application/json')) {
-      this.detectedMode = 'v2';
-      log.info('opencode', `Detected OpenCode v2 API at ${this.cfg.serverUrl}`);
-      return 'v2';
-    }
-
-    const v1Res = await fetch(this.buildUrl('/session'), {
-      headers: this.authHeaders(),
-    }).catch(() => null);
-    if (v1Res?.ok && v1Res.headers.get('content-type')?.includes('application/json')) {
+    const v1Probe = await this.probeMessageEndpoint('/session/probe-does-not-exist/message', {
+      model: { providerID: this.cfg.providerId, modelID: this.cfg.modelId },
+      parts: [{ type: 'text', text: 'probe' }],
+    });
+    if (v1Probe === 'v1') {
       this.detectedMode = 'v1';
       log.info('opencode', `Detected OpenCode v1 API at ${this.cfg.serverUrl}`);
       return 'v1';
     }
 
+    const v2Probe = await this.probeMessageEndpoint('/api/session/probe-does-not-exist/prompt', {
+      prompt: { text: 'probe' },
+    });
+    if (v2Probe === 'v2') {
+      this.detectedMode = 'v2';
+      log.info('opencode', `Detected OpenCode v2 API at ${this.cfg.serverUrl}`);
+      return 'v2';
+    }
+
     throw new Error(
-      `Could not detect OpenCode API version at ${this.cfg.serverUrl} (tried /api/session and /session)`,
+      `Could not detect OpenCode API version at ${this.cfg.serverUrl} ` +
+        `(probed /session/.../message and /api/session/.../prompt)`,
     );
+  }
+
+  /**
+   * POST a dialect-valid body to a message endpoint and classify the reply.
+   *
+   * Returns 'v1' / 'v2' when the route exists and validated the body, and
+   * null when the route is absent (it falls through to the SPA and answers
+   * text/html) or the server could not be reached.
+   */
+  private async probeMessageEndpoint(path: string, body: unknown): Promise<ApiMode | null> {
+    const res = await fetch(this.buildUrl(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    if (!res) return null;
+
+    const ctype = res.headers.get('content-type') || '';
+    if (!ctype.includes('application/json')) return null;
+
+    const text = await res.text().catch(() => '');
+
+    // The v1 dialect uses the `name`/`data` envelope; the v2 dialect uses
+    // `_tag`/`kind`. Distinguish on that, not on the message text.
+    if (text.includes('"name":"BadRequest"') || text.includes('"name":"UnknownError"')) {
+      return 'v1';
+    }
+    if (text.includes('"_tag"') || text.includes('"kind":"Payload"')) return 'v2';
+    return null;
   }
 
   async createSession(directory: string, title: string): Promise<string> {
     const mode = await this.detectMode();
     const prefix = mode === 'v2' ? '/api' : '';
+
+    // The v2 API selects the working directory with a `location` object in
+    // the body; the v1 API uses a `?directory=` query parameter. Passing the
+    // query parameter to v2 is silently ignored, so the session would be
+    // created in the server's own working directory instead of the ticket's
+    // worktree.
+    const body: Record<string, unknown> = mode === 'v2' ? { location: { directory } } : { title };
+    if (mode === 'v1') body.title = title;
 
     const res = await fetch(this.buildUrl(`${prefix}/session`, directory), {
       method: 'POST',
@@ -129,19 +191,23 @@ export class OpenCodeClient {
         'Content-Type': 'application/json',
         ...this.authHeaders(),
       },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       throw new Error(`OpenCode createSession failed (${res.status}): ${await res.text()}`);
     }
-    const body = (await res.json()) as SessionResponse;
-    const id = body.data?.id ?? body.id;
+    const bodyResp = (await res.json()) as SessionResponse;
+    const id = bodyResp.data?.id ?? bodyResp.id;
     if (!id) {
-      throw new Error(`OpenCode createSession missing session id in response: ${JSON.stringify(body)}`);
+      throw new Error(
+        `OpenCode createSession missing session id in response: ${JSON.stringify(bodyResp)}`,
+      );
     }
     log.info('opencode', `Created session ${id} (${mode}) in ${directory}`);
 
     if (mode === 'v2' && this.cfg.providerId && this.cfg.modelId) {
+      // The v2 model endpoint takes a ModelRef: `{ model: { id, providerID } }`.
+      // `id` is the bare model id, without the provider prefix.
       await fetch(this.buildUrl(`/api/session/${id}/model`, directory), {
         method: 'POST',
         headers: {
@@ -149,8 +215,10 @@ export class OpenCodeClient {
           ...this.authHeaders(),
         },
         body: JSON.stringify({
-          providerID: this.cfg.providerId,
-          modelID: this.cfg.modelId,
+          model: {
+            id: this.cfg.modelId,
+            providerID: this.cfg.providerId,
+          },
         }),
       }).catch(() => undefined);
     }
@@ -195,7 +263,11 @@ export class OpenCodeClient {
           }
         } else if (event.type === 'message.part.updated') {
           const part = event.properties?.part as
-            | (MessagePart & { name?: string; state?: { status?: string } })
+            | (MessagePart & {
+                name?: string;
+                tool?: string;
+                state?: { status?: string };
+              })
             | undefined;
           if (
             part?.sessionID === sessionId &&
@@ -205,7 +277,11 @@ export class OpenCodeClient {
             !loggedToolCalls.has(part.id)
           ) {
             loggedToolCalls.add(part.id);
-            log.info('opencode', `[${sessionId}] Running tool: ${part.name || 'unknown'}`);
+            // The live server names the tool in `tool`, not `name`.
+            log.info(
+              'opencode',
+              `[${sessionId}] Running tool: ${part.name || part.tool || 'unknown'}`,
+            );
           } else if (
             part?.sessionID === sessionId &&
             part.type === 'text' &&
@@ -217,6 +293,9 @@ export class OpenCodeClient {
             }
           }
         } else if (event.type === 'permission.updated' || event.type === 'permission.asked') {
+          // The live server emits `permission.asked` with `properties.id`
+          // holding the permission id (e.g. "per_..."), `properties.sessionID`
+          // and `properties.permission` naming the permission type.
           const perm = event.properties as
             | { id?: string; sessionID?: string; title?: string; permission?: string }
             | undefined;
@@ -258,8 +337,10 @@ export class OpenCodeClient {
             'Content-Type': 'application/json',
             ...this.authHeaders(),
           },
+          // The v2 prompt endpoint takes a PromptInput: `{ prompt: { text } }`.
+          // A flat `{ text }` body is rejected with "Missing key at prompt".
           body: JSON.stringify({
-            text: promptText,
+            prompt: { text: promptText },
           }),
         });
 
@@ -288,10 +369,14 @@ export class OpenCodeClient {
             .map((p) => p.text!)
             .join('\n');
         } else {
+          // The v2 prompt endpoint acknowledges the prompt rather than
+          // returning the reply, so wait for the turn to finish and then
+          // read the assistant message back.
           await Promise.race([
             idlePromise,
             this.pollV2UntilIdle(sessionId, directory, promptStartedAt, abortController.signal),
           ]);
+          finalText = await this.fetchLastAssistantText(prefix, sessionId, directory);
         }
       } else {
         const parts: Array<Record<string, unknown>> = [{ type: 'text', text: promptText }];
@@ -312,8 +397,13 @@ export class OpenCodeClient {
             ...this.authHeaders(),
           },
           body: JSON.stringify({
-            providerID: this.cfg.providerId,
-            modelID: this.cfg.modelId,
+            // The model MUST be nested under `model`. OpenCode ignores flat
+            // `providerID`/`modelID` fields and silently falls back to the
+            // server's default model instead of the one configured here.
+            model: {
+              providerID: this.cfg.providerId,
+              modelID: this.cfg.modelId,
+            },
             parts,
           }),
         });
@@ -431,19 +521,36 @@ export class OpenCodeClient {
     title?: string,
   ): Promise<void> {
     console.log(`[opencode] Auto-approving permission "${title || requestId}" for session ${sessionId}`);
-    await fetch(
-      this.buildUrl(`${prefix}/session/${sessionId}/permission/${requestId}/reply`, directory),
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...this.authHeaders(),
-        },
-        body: JSON.stringify({ decision: 'once', reply: 'once' }),
+
+    // The two dialects expose different routes and different body keys:
+    //   - v1: POST /session/{sessionID}/permissions/{permissionID} {response}
+    //   - v2: POST /api/session/{sessionID}/permission/{requestID}/reply {reply}
+    // The v1 route is `/permissions` (plural) with no `/reply` suffix; the
+    // old `/permission/{id}/reply` path is not served and silently falls
+    // through to the SPA, so the approval would never be registered.
+    const isV2 = prefix === '/api';
+    const url = isV2
+      ? this.buildUrl(`/api/session/${sessionId}/permission/${requestId}/reply`, directory)
+      : this.buildUrl(`/session/${sessionId}/permissions/${requestId}`, directory);
+    const body = isV2 ? { reply: 'once' } : { response: 'once' };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authHeaders(),
       },
-    ).catch((err) => {
+      body: JSON.stringify(body),
+    }).catch((err) => {
       console.warn(`[opencode] Failed to reply to permission ${requestId}:`, err);
+      return null;
     });
+
+    if (res && !res.ok) {
+      console.warn(
+        `[opencode] Permission reply for ${requestId} failed (${res.status}): ${await res.text()}`,
+      );
+    }
   }
 
   private async watchEvents(
