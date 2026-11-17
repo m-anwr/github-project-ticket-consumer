@@ -37,6 +37,8 @@ interface RawPullReviewComment {
   diff_hunk: string;
   body: string;
   commit_id: string;
+  /** The commit the comment was actually made against. */
+  original_commit_id?: string;
   created_at: string;
 }
 
@@ -201,8 +203,21 @@ export class GitHubPRsClient {
       };
     }
 
-    // Ensure the summary comment was updated after our last push (if known)
-    if (options.lastPushedAt && kiloSummaryComment.updated_at < options.lastPushedAt) {
+    // The summary has to come from the review of the CURRENT head.
+    //
+    // `kiloCheck` was fetched by head SHA, so its start time IS the start of
+    // the review of the current head: a summary updated after that belongs to
+    // this review. The daemon's own `lastPushedAt` must NOT be used here:
+    // it records when the daemon's bookkeeping ran, which can be later than
+    // the review it is waiting for (the agent pushes the branch itself now,
+    // so the daemon's "push" step finds everything already pushed and stamps
+    // the current time). Comparing against that stalls the ticket forever,
+    // because the head never changes again and the reviewer never re-runs.
+    const reviewStartedAt = kiloCheck.started_at || options.lastPushedAt || '';
+    if (
+      reviewStartedAt &&
+      Date.parse(kiloSummaryComment.updated_at) < Date.parse(reviewStartedAt)
+    ) {
       return {
         status: 'pending',
         reason: 'Waiting for Kilo Code summary comment to update for latest push',
@@ -219,7 +234,16 @@ export class GitHubPRsClient {
     const inlineComments: InlineReviewComment[] = rawInline
       .filter((c) => {
         if (!c.user || !botSet.has(c.user.login.toLowerCase())) return false;
-        if (c.commit_id === options.headSha) return true;
+        // `commit_id` is NOT a usable marker for "this finding belongs to
+        // this round": when the head moves, GitHub re-points the comment's
+        // `commit_id` at the new head, so a finding from an earlier round
+        // looks like it was made against the current one -- and the agent
+        // gets asked to fix what it already fixed, until the iteration cap.
+        // `original_commit_id` is the commit the comment was actually made
+        // against, and the creation time says which review it came from.
+        if (c.original_commit_id && c.original_commit_id === options.headSha) {
+          return true;
+        }
         if (checkStartTime && c.created_at >= checkStartTime) return true;
         return false;
       })
