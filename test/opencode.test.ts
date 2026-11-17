@@ -170,6 +170,8 @@ describe('OpenCodeClient', () => {
         status: 'ready_for_review',
         prTitle: 'feat: v1',
         prSummary: 'Implemented',
+        prNumber: undefined,
+        rawText: 'Done!',
       });
     } finally {
       server.close();
@@ -285,6 +287,7 @@ describe('OpenCodeClient', () => {
       assert.deepEqual(result, {
         status: 'needs_input',
         question: 'Which DB?',
+        rawText: '',
       });
     } finally {
       server.close();

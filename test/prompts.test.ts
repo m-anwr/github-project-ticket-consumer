@@ -3,10 +3,12 @@ import { describe, it } from 'node:test';
 import { ghCliStatus } from '../src/ghcli.ts';
 import {
   buildHumanReplyPrompt,
+  buildInitialPrompt,
+  buildPrBody,
   buildReviewFindingsPrompt,
   type PromptContext,
 } from '../src/orchestrator/prompts.ts';
-import type { InlineReviewComment, IssueComment } from '../src/types.ts';
+import type { InlineReviewComment, IssueComment, ProjectItem } from '../src/types.ts';
 
 /**
  * `COMMENT_DELIVERY` decides how a review finding or a human reply reaches the
@@ -44,8 +46,18 @@ const REPLY: IssueComment = {
   updatedAt: '2026-11-17T12:00:00Z',
 };
 
-function ctx(mode: 'agent' | 'inline'): PromptContext {
-  return { mode, owner: 'm-anwr', repo: 'tabooor-monorepo', issueNumber: 97 };
+function ctx(mode: 'agent' | 'inline', overrides: Partial<PromptContext> = {}): PromptContext {
+  return {
+    mode,
+    owner: 'm-anwr',
+    repo: 'tabooor-monorepo',
+    issueNumber: 97,
+    branchName: 'ticket/97-create-landing-page',
+    baseBranch: 'master',
+    prBodyPath: '/var/lib/consumer/pr-bodies/issue-97.md',
+    prOpening: 'agent',
+    ...overrides,
+  };
 }
 
 const REVIEW_OPTS = {
@@ -129,6 +141,80 @@ describe('buildHumanReplyPrompt', () => {
     assert.match(prompt, /Comment by @m-anwr/);
     assert.match(prompt, /Use the real WhatsApp number from the config/);
     assert.match(prompt, /<ticket-status>/);
+  });
+});
+
+const ITEM: ProjectItem = {
+  itemId: 'PVTI_1',
+  lane: 'Ready',
+  issueNumber: 97,
+  issueTitle: 'Create landing page for social media ads',
+  issueBody: 'Build the clinics landing page.',
+  issueUrl: 'https://github.com/m-anwr/tabooor-monorepo/issues/97',
+  labels: ['feature'],
+  state: 'OPEN',
+};
+
+describe('buildInitialPrompt', () => {
+  it('agent mode: asks the agent to open the pull request itself', () => {
+    const prompt = buildInitialPrompt(ITEM, [], ctx('agent'));
+
+    assert.match(prompt, /gh pr create --base master --head ticket\/97-create-landing-page/);
+    assert.match(prompt, /--body-file \/var\/lib\/consumer\/pr-bodies\/issue-97\.md/);
+    // the description has to say what changed, how it was verified, and what
+    // is still open
+    assert.match(prompt, /what changed, how you verified it/);
+    assert.match(prompt, /anything still open/);
+    // and it has to close the issue
+    assert.match(prompt, /Closes #97/);
+    // the status contract can carry the number it opened
+    assert.match(prompt, /"pr_number": 123/);
+  });
+
+  it('daemon mode: does not ask the agent to open the pull request', () => {
+    const prompt = buildInitialPrompt(ITEM, [], ctx('agent', { prOpening: 'daemon' }));
+    assert.doesNotMatch(prompt, /gh pr create/);
+    // but the agent still has to commit and push
+    assert.match(prompt, /push the branch to origin/);
+  });
+});
+
+describe('buildPrBody', () => {
+  it('uses the agent\'s own report, not just the summary', () => {
+    const body = buildPrBody(
+      {
+        status: 'ready_for_review',
+        prTitle: 'feat: add landing page',
+        prSummary: 'A one-line summary.',
+        rawText: `## What shipped
+The clinics landing page.
+
+## Verified
+scoped ESLint clean, nuxt typecheck clean, build succeeded.
+
+## Still open
+The WhatsApp number is a placeholder.`,
+      },
+      97,
+    );
+
+    assert.match(body, /## Verified/);
+    assert.match(body, /scoped ESLint clean/);
+    assert.match(body, /The WhatsApp number is a placeholder/);
+    assert.match(body, /Closes #97/);
+  });
+
+  it('falls back to the summary, then to a placeholder', () => {
+    const fromSummary = buildPrBody(
+      { status: 'ready_for_review', prSummary: 'A one-line summary.' },
+      97,
+    );
+    assert.match(fromSummary, /A one-line summary\./);
+    assert.match(fromSummary, /Closes #97/);
+
+    const fallback = buildPrBody({ status: 'unknown', rawText: 'some text' }, 97);
+    assert.match(fallback, /some text/);
+    assert.match(fallback, /Closes #97/);
   });
 });
 

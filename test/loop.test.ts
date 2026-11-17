@@ -111,16 +111,19 @@ describe('TicketOrchestrator', () => {
           downloadAssets: async () => [],
         } as never,
         prs: {
+          findOpenPRByBranch: async () => null,
           createOrGetPR: async () => ({
             number: 55,
             url: 'https://github.com/your-org/your-repo/pull/55',
             headSha: 'sha1',
           }),
+          updatePR: async () => {},
           getPR: async () => ({
             number: 55,
             state: mergedPr ? 'closed' : 'open',
             merged: mergedPr,
             head: { sha: 'sha1', ref: 'ticket/7-add-feature' },
+            body: 'Automated implementation by OpenCode.\n\nCloses #7',
           }),
           evaluateKiloCodeReview: async () => reviewState,
           mergePR: async () => {

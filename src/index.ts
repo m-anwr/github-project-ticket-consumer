@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from './config.ts';
 import { TicketStore } from './db/store.ts';
@@ -41,9 +42,10 @@ async function main(): Promise<void> {
   );
 
   // `COMMENT_DELIVERY=agent` asks the AGENT to fetch the comments itself with
-  // the `gh` CLI instead of the daemon quoting them into the prompt. Check
-  // the CLI up front and fall back to quoting them inline when it is not
-  // usable -- otherwise every review round would fail on the fetch.
+  // the `gh` CLI instead of the daemon quoting them into the prompt, and
+  // `PR_OPENING=agent` asks it to open the pull request with `gh pr create`.
+  // Check the CLI up front and fall back to the daemon doing both when it is
+  // not usable -- otherwise every review round would fail on the fetch.
   const ghCli = ghCliStatus();
   if (config.commentDelivery === 'agent' && !ghCli.usable) {
     console.warn(
@@ -51,9 +53,19 @@ async function main(): Promise<void> {
     );
     config.commentDelivery = 'inline';
   }
+  if (config.prOpening === 'agent' && !ghCli.usable) {
+    console.warn(
+      `[startup] PR_OPENING=agent needs the gh CLI in the agent's environment, but ${ghCli.detail}. Falling back to PR_OPENING=daemon.`,
+    );
+    config.prOpening = 'daemon';
+  }
   console.log(
-    `[startup] commentDelivery=${config.commentDelivery} gh=${ghCli.detail}`,
+    `[startup] commentDelivery=${config.commentDelivery} prOpening=${config.prOpening} gh=${ghCli.detail}`,
   );
+
+  // Where the agent writes the pull request description. Outside the
+  // repository, so it cannot end up in the diff.
+  mkdirSync(join(config.dataDir, 'pr-bodies'), { recursive: true });
 
   const orchestrator = new TicketOrchestrator({
     config,

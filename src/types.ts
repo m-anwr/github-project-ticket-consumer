@@ -26,6 +26,20 @@ export type ManualMergeBehavior = 'keep_in_review' | 'move_to_done';
  */
 export type CommentDeliveryMode = 'agent' | 'inline';
 
+/**
+ * Who opens the pull request.
+ *
+ * `agent` - the agent opens it with the `gh` CLI, so the title and the
+ * description are the agent's own words and it can edit them later
+ * (`gh pr edit`). The daemon finds the PR afterwards by branch name, which is
+ * deterministic, so it does not have to trust the number the agent reported.
+ *
+ * `daemon` - the daemon opens it from the agent's final report. Used when the
+ * `gh` CLI is unavailable to the agent, and as the fallback when the agent did
+ * not open one: completed work is never left without a PR.
+ */
+export type PrOpeningMode = 'agent' | 'daemon';
+
 export interface Config {
   githubToken: string;
   githubOwner: string;
@@ -60,6 +74,11 @@ export interface Config {
    * `inline` automatically when it is not.
    */
   commentDelivery: CommentDeliveryMode;
+  /**
+   * Who opens the pull request: the agent with `gh`, or the daemon from the
+   * agent's report.
+   */
+  prOpening: PrOpeningMode;
 }
 
 export interface ProjectItem {
@@ -126,6 +145,18 @@ export type KiloCodeReviewEvaluation =
     };
 
 export type OpenCodeTicketStatus =
-  | { status: 'needs_input'; question: string }
-  | { status: 'ready_for_review'; prTitle?: string; prSummary?: string }
+  | { status: 'needs_input'; question: string; rawText?: string }
+  | {
+      status: 'ready_for_review';
+      prTitle?: string;
+      prSummary?: string;
+      /** Number of the PR the agent opened, when it opened one itself. */
+      prNumber?: number;
+      /**
+       * The agent's final message with the `<ticket-status>` block removed.
+       * This is the richest description of the work the agent produced, so it
+       * is what the PR description is built from.
+       */
+      rawText?: string;
+    }
   | { status: 'unknown'; rawText: string };

@@ -103,8 +103,9 @@ stateDiagram-v2
 | `MANUAL_MERGE_LABEL` | `manual merge` | Label that disables auto-merging |
 | `READY_TO_MERGE_LABEL` | `ready to merge` | Label added in `keep_in_review` mode once review passes |
 | `COMMENT_DELIVERY` | `agent` | How review findings and human replies reach the agent. `agent` = the daemon passes comment ids and the agent fetches the comments itself with `gh`; `inline` = the daemon quotes the comment bodies and diff hunks into the prompt. |
+| `PR_OPENING` | `agent` | Who opens the pull request. `agent` = the agent opens it with `gh pr create`, so the title and description are its own words and it can edit them later; `daemon` = the daemon opens it from the agent's final report. |
 
-## How the agent receives comments
+## How the agent talks to GitHub
 
 `COMMENT_DELIVERY` decides what the daemon puts in the prompt when it has to
 tell the agent about a review or a human reply.
@@ -122,11 +123,26 @@ in scope (the review bot's own comments, posted against the current head SHA),
 so a later round never re-fixes an earlier round's findings. Only the
 transport of the content differs.
 
+`PR_OPENING` decides who opens the pull request.
+
+| | `agent` (default) | `daemon` |
+|---|---|---|
+| Opened by | the agent, with `gh pr create` | the daemon, from the agent's final report |
+| Title & description | the agent's own words | the agent's final report, verbatim |
+| Later edits | the agent, with `gh pr edit` | — |
+| Needs `gh` on the agent's PATH | yes | no |
+
+The daemon finds the PR the agent opened **by branch name**, which is
+deterministic (`ticket/<issue>-<slug>`), so it does not have to trust the
+number the agent reported — it only warns when the two disagree. If the agent
+did not open a PR (or its `gh` call failed), the daemon opens one itself, so
+completed work is never left without a PR.
+
 The daemon checks `gh` at startup. If it is missing or unauthenticated it logs
-a warning and falls back to `inline` for the run, rather than failing every
-review round. The prompt also tells the agent to stop and report if `gh` turns
-out to be unusable for it, so a mismatch between the daemon's environment and
-the agent's fails loudly instead of silently.
+a warning and falls back to `inline` / `daemon` for the run, rather than
+failing every review round. The prompt also tells the agent to stop and report
+if `gh` turns out to be unusable for it, so a mismatch between the daemon's
+environment and the agent's fails loudly instead of silently.
 
 ## Running on a VPS (systemd)
 
