@@ -9,7 +9,14 @@ import type {
 } from '../types.ts';
 
 const STATUS_CONTRACT = `
-When you finish your turn, you MUST end your final message with a single <ticket-status> JSON block:
+When you finish your turn, you MUST end your final message with a single <ticket-status> JSON block.
+
+Before the block, write the report that will become the pull request description:
+- what changed,
+- how you verified it (the commands you ran and their results),
+- anything still open (placeholders, follow-ups, or things you could not do).
+
+Do not guess at values you could not verify, and do not skip this report: the status block alone is machine-readable and says nothing to a human reviewer. If everything is done and verified, say so plainly.
 
 1. If you need clarification, credentials, design assets, or a decision from the user before continuing:
 <ticket-status>
@@ -24,7 +31,7 @@ When you finish your turn, you MUST end your final message with a single <ticket
 {
   "status": "ready_for_review",
   "pr_number": 123,
-  "pr_title": "Short conventional PR title",
+  "pr_title": "feat: short conventional title",
   "pr_summary": "Concise summary of what changed and how it was verified"
 }
 </ticket-status>
@@ -80,6 +87,7 @@ export function buildInitialPrompt(
     gh pr create --base ${ctx.baseBranch} --head ${ctx.branchName} --title "<conventional title>" --body-file ${ctx.prBodyPath}
   Write the description to ${ctx.prBodyPath} first. It is outside the repository, so it will not appear in the diff.
   The description must cover: what changed, how you verified it (the commands you ran and their results), and anything still open (placeholders, follow-ups, or things you could not do). Do not guess at values you could not verify.
+  Use a conventional-commit title: "feat:", "fix:", "chore:", "docs:" or "refactor:".
   Include the line "Closes #${item.issueNumber}" so the issue closes when the PR merges.
   If the \`gh\` command fails, say so in your final message instead of reporting the work as ready.`
       : '';
