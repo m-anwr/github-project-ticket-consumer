@@ -59,6 +59,7 @@ async function main(): Promise<void> {
     );
     config.prOpening = 'daemon';
   }
+  config.ghAvailable = ghCli.usable;
   console.log(
     `[startup] commentDelivery=${config.commentDelivery} prOpening=${config.prOpening} gh=${ghCli.detail}`,
   );

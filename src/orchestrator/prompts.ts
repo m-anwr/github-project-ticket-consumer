@@ -55,6 +55,11 @@ export interface PromptContext {
   prNumber?: number;
   /** Whether the agent is expected to open the pull request itself. */
   prOpening: PrOpeningMode;
+  /**
+   * Whether the agent can run `gh` at all. The prompts must not tell it to
+   * run `gh pr edit` when the CLI is not there.
+   */
+  ghAvailable: boolean;
 }
 
 function formatAssetsNote(assets: DownloadedAsset[]): string {
@@ -144,8 +149,12 @@ export function buildReviewFindingsPrompt(
     summary: string;
   },
 ): string {
-  const pushNote = `The pull request is already open (#${prNumber}) on branch "${ctx.branchName}". Push your fixes to that branch -- the PR updates automatically. If the fixes change what the PR does, update the description:
-  gh pr edit ${prNumber} --body-file ${ctx.prBodyPath}`;
+  const pushNote =
+    `The pull request is already open (#${prNumber}) on branch "${ctx.branchName}". ` +
+    `Push your fixes to that branch -- the PR updates automatically.` +
+    (ctx.ghAvailable
+      ? `\nIf the fixes change what the PR does, update the description:\n  gh pr edit ${prNumber} --body-file ${ctx.prBodyPath}`
+      : '');
 
   if (ctx.mode === 'agent') {
     const ids = options.inlineComments.map((c) => c.id);
@@ -205,18 +214,24 @@ ${STATUS_CONTRACT}`;
 }
 
 /**
- * The pull request description the daemon writes when the agent did not open
- * the pull request itself.
+ * The agent's own report of the work, without the closing line.
  *
- * It is the agent's own final report -- not a re-summary of it -- plus the
- * closing line. The report is where the agent puts what it verified and what
- * it could not do, which is what a reviewer needs and what `pr_summary` only
- * sometimes carries.
+ * This is the agent's final message with the machine-readable block removed:
+ * the part where it says what shipped, how it verified it, and what it could
+ * not do. `pr_summary` is only the one paragraph the agent chose to
+ * compress, so it is the fallback, not the source.
  */
-export function buildPrBody(outcome: OpenCodeTicketStatus, issueNumber: number): string {
+export function buildPrReport(outcome: OpenCodeTicketStatus): string {
   const report = outcome.rawText?.trim();
   const summary =
     outcome.status === 'ready_for_review' ? outcome.prSummary?.trim() : undefined;
-  const body = report || summary || 'Automated implementation by OpenCode.';
-  return `${body}\n\nCloses #${issueNumber}`;
+  return report || summary || 'Automated implementation by OpenCode.';
+}
+
+/**
+ * The pull request description the daemon writes when it owns the pull
+ * request: the agent's own report plus the closing line.
+ */
+export function buildPrBody(outcome: OpenCodeTicketStatus, issueNumber: number): string {
+  return `${buildPrReport(outcome)}\n\nCloses #${issueNumber}`;
 }

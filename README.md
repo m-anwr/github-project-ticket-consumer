@@ -129,7 +129,7 @@ transport of the content differs.
 |---|---|---|
 | Opened by | the agent, with `gh pr create` | the daemon, from the agent's final report |
 | Title & description | the agent's own words | the agent's final report, verbatim |
-| Later edits | the agent, with `gh pr edit` | — |
+| Later edits | the agent, with `gh pr edit` | the daemon appends each review round's report |
 | Needs `gh` on the agent's PATH | yes | no |
 
 The daemon finds the PR the agent opened **by branch name**, which is
@@ -137,6 +137,12 @@ deterministic (`ticket/<issue>-<slug>`), so it does not have to trust the
 number the agent reported — it only warns when the two disagree. If the agent
 did not open a PR (or its `gh` call failed), the daemon opens one itself, so
 completed work is never left without a PR.
+
+In `daemon` mode the daemon owns the pull request: it creates it, it never
+adopts one the agent opened, and it keeps the description current by
+appending each review round's report under a `## Review fixes (round N)`
+heading. In `agent` mode the agent owns the description and can update it
+itself with `gh pr edit`.
 
 The daemon checks `gh` at startup. If it is missing or unauthenticated it logs
 a warning and falls back to `inline` / `daemon` for the run, rather than

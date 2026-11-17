@@ -79,6 +79,11 @@ export interface Config {
    * agent's report.
    */
   prOpening: PrOpeningMode;
+  /**
+   * Whether the `gh` CLI is usable by the agent. Set at startup from a real
+   * probe; the prompts only tell the agent to run `gh` when it is true.
+   */
+  ghAvailable: boolean;
 }
 
 export interface ProjectItem {

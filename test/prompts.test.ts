@@ -56,6 +56,7 @@ function ctx(mode: 'agent' | 'inline', overrides: Partial<PromptContext> = {}): 
     baseBranch: 'master',
     prBodyPath: '/var/lib/consumer/pr-bodies/issue-97.md',
     prOpening: 'agent',
+    ghAvailable: true,
     ...overrides,
   };
 }
@@ -94,6 +95,17 @@ describe('buildReviewFindingsPrompt', () => {
     assert.match(prompt, /LANDING_CONFIG\.formEndpoint/);
     assert.match(prompt, /### Finding 1: `fe\/app\/components\/landing\/LandingSetupForm\.vue`/);
     assert.match(prompt, /<ticket-status>/);
+  });
+
+  it('does not tell the agent to run gh when it has no gh', () => {
+    const prompt = buildReviewFindingsPrompt(
+      98,
+      ctx('inline', { ghAvailable: false }),
+      REVIEW_OPTS,
+    );
+    assert.doesNotMatch(prompt, /gh pr edit/);
+    // but it still tells it where to push
+    assert.match(prompt, /Push your fixes to that branch/);
   });
 
   it('agent mode does not grow with the size of the findings', () => {

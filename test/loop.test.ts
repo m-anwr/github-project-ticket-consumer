@@ -27,6 +27,7 @@ function makeConfig(dataDir: string): Config {
     opencodeProviderId: 'anthropic',
     opencodeModelId: 'claude-sonnet',
     opencodeServerUsername: 'opencode',
+    opencodeMessageTimeoutMs: 0,
     repoLocalPath: dataDir,
     baseBranch: 'main',
     dataDir,
@@ -36,6 +37,9 @@ function makeConfig(dataDir: string): Config {
     manualMergeBehavior: 'keep_in_review',
     manualMergeLabel: 'manual merge',
     readyToMergeLabel: 'ready to merge',
+    commentDelivery: 'agent',
+    prOpening: 'agent',
+    ghAvailable: true,
   };
 }
 

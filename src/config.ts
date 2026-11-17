@@ -105,5 +105,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     readyToMergeLabel: env.READY_TO_MERGE_LABEL?.trim() || 'ready to merge',
     commentDelivery,
     prOpening,
+    ghAvailable: false,
   };
 }

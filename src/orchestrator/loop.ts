@@ -12,6 +12,7 @@ import {
   buildHumanReplyPrompt,
   buildInitialPrompt,
   buildPrBody,
+  buildPrReport,
   buildReviewFindingsPrompt,
   type PromptContext,
 } from './prompts.ts';
@@ -58,6 +59,7 @@ export class TicketOrchestrator {
       prBodyPath: join(config.dataDir, 'pr-bodies', `issue-${item.issueNumber}.md`),
       prNumber,
       prOpening: config.prOpening,
+      ghAvailable: config.ghAvailable,
     };
   }
 
@@ -286,13 +288,22 @@ export class TicketOrchestrator {
           summary: review.summary,
         },
       );
-      await opencode.sendPromptAndWait(sessionId, record.worktreePath, prompt);
+      const outcome = await opencode.sendPromptAndWait(sessionId, record.worktreePath, prompt);
 
       await worktrees.ensureCommittedAndPushed(
         record.worktreePath,
         record.branchName,
         `fix: address review feedback for #${item.issueNumber}`,
       );
+
+      if (config.prOpening === 'daemon' && outcome.status === 'ready_for_review') {
+        // The daemon owns the description in this mode, so it has to keep it
+        // current: this round's report is appended to it.
+        const currentPr = await prs.getPR(pr.number);
+        await prs.updatePR(pr.number, {
+          body: this.appendReport(currentPr.body ?? '', outcome, item.issueNumber),
+        });
+      }
 
       store.patch(item.issueNumber, {
         sessionId,
@@ -361,7 +372,7 @@ export class TicketOrchestrator {
     branchName: string,
     outcome: OpenCodeTicketStatus,
   ): Promise<void> {
-    const { store, projects, issues, prs, worktrees } = this.deps;
+    const { store, projects, issues, prs, worktrees, config } = this.deps;
 
     if (outcome.status === 'needs_input') {
       console.log(`[in-progress] #${item.issueNumber} needs input`);
@@ -387,39 +398,60 @@ export class TicketOrchestrator {
       agentTitle || `feat: resolve #${item.issueNumber}`,
     );
 
-    // The agent opens the PR itself (PR_OPENING=agent), so the title and the
-    // description are its own words and it can edit them later. The branch
-    // name is deterministic, so find the PR it opened by branch rather than
-    // trusting the number it reported.
-    const found = await prs.findOpenPRByBranch(branchName);
+    // Who owns the pull request:
+    //
+    //   PR_OPENING=agent  - the agent opens it with `gh pr create`, so the
+    //     title and the description are its own words and it can edit them
+    //     later. The branch name is deterministic, so find the PR it opened
+    //     by branch rather than trusting the number it reported.
+    //   PR_OPENING=daemon - the daemon owns it: it creates the PR, and
+    //     updates it on later rounds. It never adopts one the agent opened.
+    const existing = await prs.findOpenPRByBranch(branchName);
+    const title = agentTitle || `feat: resolve #${item.issueNumber}`;
     let prNumber: number;
     let prUrl: string;
 
-    if (found) {
-      prNumber = found.number;
-      prUrl = found.html_url;
-      if (outcome.status === 'ready_for_review' && outcome.prNumber && outcome.prNumber !== found.number) {
+    if (existing && config.prOpening === 'agent') {
+      prNumber = existing.number;
+      prUrl = existing.html_url;
+      if (
+        outcome.status === 'ready_for_review' &&
+        outcome.prNumber &&
+        outcome.prNumber !== existing.number
+      ) {
         console.warn(
-          `[in-progress] #${item.issueNumber}: agent reported PR #${outcome.prNumber}, but the branch has PR #${found.number}`,
+          `[in-progress] #${item.issueNumber}: agent reported PR #${outcome.prNumber}, but the branch has PR #${existing.number}`,
         );
       }
       // The agent writes the description, so make sure it closes the issue.
-      await this.ensurePrClosesIssue(found.number, found.body ?? '', item.issueNumber);
+      await this.ensurePrClosesIssue(existing.number, existing.body ?? '', item.issueNumber);
       console.log(`[in-progress] Agent opened PR #${prNumber} (${prUrl}) for #${item.issueNumber}`);
+    } else if (existing) {
+      // daemon mode, and the PR is one we own: update it with the agent's
+      // latest report instead of leaving the first one stale.
+      await prs.updatePR(existing.number, {
+        title,
+        body: this.appendReport(existing.body ?? '', outcome, item.issueNumber),
+      });
+      prNumber = existing.number;
+      prUrl = existing.html_url;
+      console.log(`[in-progress] Updated PR #${prNumber} (${prUrl}) for #${item.issueNumber}`);
     } else {
-      // The agent did not open one -- or its `gh` call failed. Open it here so
-      // completed work is never left without a PR, using the agent's own
-      // report as the description.
+      // No pull request on the branch. In agent mode the agent was supposed
+      // to open one; open it here so completed work is never left without a
+      // PR, using the agent's own report as the description.
       const created = await prs.createOrGetPR(
         branchName,
-        this.deps.config.baseBranch,
-        agentTitle || `feat: resolve #${item.issueNumber}`,
+        config.baseBranch,
+        title,
         buildPrBody(outcome, item.issueNumber),
       );
       prNumber = created.number;
       prUrl = created.url;
       console.log(
-        `[in-progress] Opened PR #${prNumber} (${prUrl}) for #${item.issueNumber} (the agent did not open one)`,
+        `[in-progress] Opened PR #${prNumber} (${prUrl}) for #${item.issueNumber}${
+          config.prOpening === 'agent' ? ' (the agent did not open one)' : ''
+        }`,
       );
     }
 
@@ -430,6 +462,22 @@ export class TicketOrchestrator {
       lastPushedAt: pushed ? new Date().toISOString() : new Date().toISOString(),
     });
     await projects.moveItemToLane(item.itemId, LANES.IN_REVIEW);
+  }
+
+  /**
+   * The daemon's own pull request description, kept current as the work goes
+   * on: the first report describes the change, and each later round appends
+   * what it fixed.
+   */
+  private appendReport(
+    current: string,
+    outcome: OpenCodeTicketStatus,
+    issueNumber: number,
+  ): string {
+    const existing = current.trim();
+    if (!existing) return buildPrBody(outcome, issueNumber);
+    const round = (this.deps.store.get(issueNumber)?.reviewIterations ?? 0) + 1;
+    return `${existing}\n\n## Review fixes (round ${round})\n\n${buildPrReport(outcome)}`;
   }
 
   /**
