@@ -51,30 +51,47 @@ export function parseTicketStatus(text: string): OpenCodeTicketStatus {
     return { status: 'unknown', rawText: text };
   }
 
+  // The agent's own words, with the machine-readable block taken out. This is
+  // what the PR description is built from: it is the complete report, where
+  // `pr_summary` is only the one paragraph the agent chose to compress.
+  const rawText = text.slice(0, lastMatch.index).trim();
+
   try {
     const parsed = JSON.parse(lastMatch[1]) as {
       status?: string;
       question?: string;
       pr_title?: string;
       pr_summary?: string;
+      pr_number?: number | string;
     };
 
     if (parsed.status === 'needs_input' && parsed.question?.trim()) {
-      return { status: 'needs_input', question: parsed.question.trim() };
+      return { status: 'needs_input', question: parsed.question.trim(), rawText };
     }
 
     if (parsed.status === 'ready_for_review') {
+      const prNumber =
+        typeof parsed.pr_number === 'number'
+          ? parsed.pr_number
+          : typeof parsed.pr_number === 'string' && /^\d+$/.test(parsed.pr_number.trim())
+            ? Number(parsed.pr_number.trim())
+            : undefined;
       return {
         status: 'ready_for_review',
         prTitle: parsed.pr_title?.trim() || undefined,
         prSummary: parsed.pr_summary?.trim() || undefined,
+        prNumber: prNumber && prNumber > 0 ? prNumber : undefined,
+        rawText,
       };
     }
   } catch {
     // Fall through to unknown
   }
 
-  return { status: 'unknown', rawText: text };
+  // The report is the text before the block, whatever the block contained:
+  // the `<ticket-status>` JSON is machine-readable and must never end up in
+  // a pull request description.
+  return { status: 'unknown', rawText };
 }
 
 export class OpenCodeClient {

@@ -3,6 +3,8 @@ import type {
   DownloadedAsset,
   InlineReviewComment,
   IssueComment,
+  OpenCodeTicketStatus,
+  PrOpeningMode,
   ProjectItem,
 } from '../types.ts';
 
@@ -21,23 +23,43 @@ When you finish your turn, you MUST end your final message with a single <ticket
 <ticket-status>
 {
   "status": "ready_for_review",
+  "pr_number": 123,
   "pr_title": "Short conventional PR title",
   "pr_summary": "Concise summary of what changed and how it was verified"
 }
 </ticket-status>
+
+"pr_number" is optional -- include it when you opened the pull request yourself.
 `.trim();
 
 /**
- * Where the prompt's GitHub facts come from.
- *
- * In `agent` mode the daemon passes identifiers only and the agent fetches the
- * comments itself, so the prompt has to name the repository to ask.
+ * Where the prompt's GitHub facts come from, and what the agent is expected
+ * to do with them.
  */
 export interface PromptContext {
+  /** How review findings and human replies reach the agent. */
   mode: CommentDeliveryMode;
   owner: string;
   repo: string;
   issueNumber: number;
+  /** The branch the agent works on. */
+  branchName: string;
+  /** The branch the pull request targets. */
+  baseBranch: string;
+  /**
+   * Where the agent should write the pull request description. It is outside
+   * the repository on purpose, so it cannot end up in the diff.
+   */
+  prBodyPath: string;
+  /** The pull request, when one is already open for this ticket. */
+  prNumber?: number;
+  /** Whether the agent is expected to open the pull request itself. */
+  prOpening: PrOpeningMode;
+  /**
+   * Whether the agent can run `gh` at all. The prompts must not tell it to
+   * run `gh pr edit` when the CLI is not there.
+   */
+  ghAvailable: boolean;
 }
 
 function formatAssetsNote(assets: DownloadedAsset[]): string {
@@ -48,12 +70,23 @@ function formatAssetsNote(assets: DownloadedAsset[]): string {
 
 export function buildInitialPrompt(
   item: ProjectItem,
-  branchName: string,
   assets: DownloadedAsset[],
+  ctx: PromptContext,
 ): string {
+  const openPr =
+    ctx.prOpening === 'agent'
+      ? `
+- Open the pull request yourself, once the branch is pushed to origin:
+    gh pr create --base ${ctx.baseBranch} --head ${ctx.branchName} --title "<conventional title>" --body-file ${ctx.prBodyPath}
+  Write the description to ${ctx.prBodyPath} first. It is outside the repository, so it will not appear in the diff.
+  The description must cover: what changed, how you verified it (the commands you ran and their results), and anything still open (placeholders, follow-ups, or things you could not do). Do not guess at values you could not verify.
+  Include the line "Closes #${item.issueNumber}" so the issue closes when the PR merges.
+  If the \`gh\` command fails, say so in your final message instead of reporting the work as ready.`
+      : '';
+
   return `You are working on GitHub Issue #${item.issueNumber}: "${item.issueTitle}"
 Issue URL: ${item.issueUrl}
-Git branch: ${branchName}
+Git branch: ${ctx.branchName}
 Labels: ${item.labels.length > 0 ? item.labels.join(', ') : 'none'}
 
 Issue Description:
@@ -62,7 +95,8 @@ ${formatAssetsNote(assets)}
 Instructions:
 - Explore the codebase in your current working directory and implement the requested fix/feature.
 - Run relevant tests, typechecks, or linters to verify your changes.
-- Commit your changes cleanly on branch "${branchName}" (do not switch branches).
+- Commit your changes cleanly on branch "${ctx.branchName}" (do not switch branches) and push the branch to origin.
+${openPr}
 - Only ask for input if there is genuine ambiguity or missing information you cannot resolve from the codebase.
 
 ${STATUS_CONTRACT}`;
@@ -84,8 +118,8 @@ Read the reply yourself -- do not rely on a transcription of it:
 Only the comment(s) with these ids are new replies (the newest one is the reply you need):
 ${ids.length > 0 ? ids.join(', ') : '(none)'}
 ${formatAssetsNote(assets)}
-Continue working on the ticket using this input. Commit your changes on the current branch when done.
-
+Continue working on the ticket using this input, on branch "${ctx.branchName}". Commit your changes on that branch when done.
+${ctx.prNumber ? `The pull request #${ctx.prNumber} is already open; push to the same branch.\n` : ''}
 If \`gh\` is unavailable or unauthenticated, say so and stop -- do not guess what the user said.
 
 ${STATUS_CONTRACT}`;
@@ -115,6 +149,13 @@ export function buildReviewFindingsPrompt(
     summary: string;
   },
 ): string {
+  const pushNote =
+    `The pull request is already open (#${prNumber}) on branch "${ctx.branchName}". ` +
+    `Push your fixes to that branch -- the PR updates automatically.` +
+    (ctx.ghAvailable
+      ? `\nIf the fixes change what the PR does, update the description:\n  gh pr edit ${prNumber} --body-file ${ctx.prBodyPath}`
+      : '');
+
   if (ctx.mode === 'agent') {
     const ids = options.inlineComments.map((c) => c.id);
     return `Kilo Code reviewed PR #${prNumber} and left findings. Read them yourself -- do not rely on a transcription:
@@ -132,6 +173,8 @@ Instructions:
 1. Validate EACH finding against the actual codebase -- do not blindly apply changes if a finding is a false positive, already handled, or out of scope.
 2. Fix all valid issues and verify with tests/typecheck.
 3. Commit and push your fixes to the current PR branch (or if all findings were invalid/false positives, explain why in your summary).
+
+${pushNote}
 
 If \`gh\` is unavailable or unauthenticated, say so and stop -- do not guess what the reviewer wrote.
 
@@ -165,5 +208,66 @@ Instructions:
 2. Fix all valid issues and verify with tests/typecheck.
 3. Commit and push your fixes to the current PR branch (or if all findings were invalid/false positives, explain why in your summary).
 
+${pushNote}
+
 ${STATUS_CONTRACT}`;
+}
+
+/**
+ * Strip the machine-readable status block from a report.
+ *
+ * `parseTicketStatus` already removes it, but the report ends up in a pull
+ * request description that people read, so the guarantee is made here too.
+ */
+function stripStatusBlock(text: string | undefined): string {
+  if (!text) return '';
+  const at = text.search(/<ticket-status>/i);
+  return (at >= 0 ? text.slice(0, at) : text).trim();
+}
+
+/**
+ * The agent's own report of the work, without the closing line.
+ *
+ * This is the agent's final message with the machine-readable block removed:
+ * the part where it says what shipped, how it verified it, and what it could
+ * not do. `pr_summary` is only the one paragraph the agent chose to
+ * compress, so it is the fallback, not the source.
+ */
+export function buildPrReport(outcome: OpenCodeTicketStatus): string {
+  const report = stripStatusBlock(outcome.rawText);
+  const summary =
+    outcome.status === 'ready_for_review' ? outcome.prSummary?.trim() : undefined;
+  return report || summary || 'Automated implementation by OpenCode.';
+}
+
+/**
+ * The pull request description the daemon writes when it owns the pull
+ * request: the agent's own report plus the closing line.
+ */
+export function buildPrBody(outcome: OpenCodeTicketStatus, issueNumber: number): string {
+  return `${buildPrReport(outcome)}\n\nCloses #${issueNumber}`;
+}
+
+/**
+ * Append the agent's report for a review round to the pull request
+ * description.
+ *
+ * The section for a round is replaced rather than appended to, so a repeated
+ * run for the same round does not duplicate it.
+ */
+export function appendPrReport(
+  current: string,
+  outcome: OpenCodeTicketStatus,
+  issueNumber: number,
+  round: number,
+): string {
+  const existing = current.trim();
+  if (!existing) return buildPrBody(outcome, issueNumber);
+  const heading = `## Review fixes (round ${round})`;
+  const report = buildPrReport(outcome);
+  const already = existing.indexOf(heading);
+  if (already >= 0) {
+    return `${existing.slice(0, already).trimEnd()}\n\n${heading}\n\n${report}`;
+  }
+  return `${existing}\n\n${heading}\n\n${report}`;
 }

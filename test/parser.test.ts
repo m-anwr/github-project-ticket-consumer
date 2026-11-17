@@ -14,10 +14,16 @@ I checked the codebase and need clarification.
   "question": "Should the button redirect to /settings?"
 }
 </ticket-status>`);
-    assert.deepEqual(out, {
-      status: 'needs_input',
-      question: 'Should the button redirect to /settings?',
-    });
+    assert.equal(out.status, 'needs_input');
+    assert.equal(
+      out.status === 'needs_input' ? out.question : null,
+      'Should the button redirect to /settings?',
+    );
+    // The agent's own words are kept, without the machine-readable block.
+    assert.equal(
+      out.status === 'needs_input' ? out.rawText : null,
+      'I checked the codebase and need clarification.',
+    );
   });
 
   it('parses ready_for_review status', () => {
@@ -30,16 +36,57 @@ All tests pass.
   "pr_summary": "Added sections and unit tests."
 }
 </ticket-status>`);
-    assert.deepEqual(out, {
-      status: 'ready_for_review',
-      prTitle: 'feat: add profile sections',
-      prSummary: 'Added sections and unit tests.',
-    });
+    assert.equal(out.status, 'ready_for_review');
+    assert.equal(
+      out.status === 'ready_for_review' ? out.prTitle : null,
+      'feat: add profile sections',
+    );
+    assert.equal(
+      out.status === 'ready_for_review' ? out.prSummary : null,
+      'Added sections and unit tests.',
+    );
+    assert.equal(out.status === 'ready_for_review' ? out.rawText : null, 'All tests pass.');
+    assert.equal(out.status === 'ready_for_review' ? out.prNumber : null, undefined);
+  });
+
+  it('parses the PR number the agent opened, as a number or a string', () => {
+    const numeric = parseTicketStatus(`
+Done.
+<ticket-status>
+{ "status": "ready_for_review", "pr_number": 98 }
+</ticket-status>`);
+    assert.equal(numeric.status === 'ready_for_review' ? numeric.prNumber : null, 98);
+
+    const asString = parseTicketStatus(`
+Done.
+<ticket-status>
+{ "status": "ready_for_review", "pr_number": "98" }
+</ticket-status>`);
+    assert.equal(asString.status === 'ready_for_review' ? asString.prNumber : null, 98);
+
+    const garbage = parseTicketStatus(`
+Done.
+<ticket-status>
+{ "status": "ready_for_review", "pr_number": "not-a-number" }
+</ticket-status>`);
+    assert.equal(garbage.status === 'ready_for_review' ? garbage.prNumber : null, undefined);
   });
 
   it('returns unknown when no tag is present', () => {
     const out = parseTicketStatus('Just some text');
     assert.equal(out.status, 'unknown');
+  });
+
+  it('strips the status block even when its JSON is unusable', () => {
+    const out = parseTicketStatus(`
+Here is what I did.
+<ticket-status>
+{ this is not json }
+</ticket-status>`);
+    assert.equal(out.status, 'unknown');
+    assert.equal(out.rawText, 'Here is what I did.');
+    // the machine-readable block must never reach a pull request description
+    assert.doesNotMatch(out.rawText, /ticket-status/);
   });
 });
 

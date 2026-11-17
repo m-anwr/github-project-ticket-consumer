@@ -8,6 +8,8 @@ interface RawPR {
   html_url: string;
   head: { sha: string; ref: string };
   mergeable_state?: string;
+  title?: string;
+  body?: string | null;
 }
 
 interface RawCheckRun {
@@ -71,20 +73,42 @@ export class GitHubPRsClient {
     this.repo = repo;
   }
 
+  /**
+   * The open PR for a branch, if there is one.
+   *
+   * The branch name is deterministic (`ticket/<issue>-<slug>`), so this finds
+   * the PR the agent opened without having to trust the number it reported.
+   */
+  async findOpenPRByBranch(branchName: string): Promise<RawPR | null> {
+    const existing = await this.client.rest<RawPR[]>(
+      `/repos/${this.owner}/${this.repo}/pulls?head=${encodeURIComponent(`${this.owner}:${branchName}`)}&state=open`,
+    );
+    return existing[0] ?? null;
+  }
+
+  /** Update a PR's title and/or description. */
+  async updatePR(
+    prNumber: number,
+    fields: { title?: string; body?: string },
+  ): Promise<void> {
+    await this.client.rest(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`, {
+      method: 'PATCH',
+      body: fields,
+    });
+  }
+
   async createOrGetPR(
     branchName: string,
     baseBranch: string,
     title: string,
     body: string,
   ): Promise<{ number: number; url: string; headSha: string }> {
-    const existing = await this.client.rest<RawPR[]>(
-      `/repos/${this.owner}/${this.repo}/pulls?head=${encodeURIComponent(`${this.owner}:${branchName}`)}&state=open`,
-    );
-    if (existing.length > 0) {
+    const existing = await this.findOpenPRByBranch(branchName);
+    if (existing) {
       return {
-        number: existing[0].number,
-        url: existing[0].html_url,
-        headSha: existing[0].head.sha,
+        number: existing.number,
+        url: existing.html_url,
+        headSha: existing.head.sha,
       };
     }
 

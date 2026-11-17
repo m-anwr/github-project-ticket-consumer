@@ -9,8 +9,10 @@ import { log } from '../logger.ts';
 import type { OpenCodeClient } from '../opencode/client.ts';
 import { LANES, type Config, type OpenCodeTicketStatus, type ProjectItem } from '../types.ts';
 import {
+  appendPrReport,
   buildHumanReplyPrompt,
   buildInitialPrompt,
+  buildPrBody,
   buildReviewFindingsPrompt,
   type PromptContext,
 } from './prompts.ts';
@@ -39,12 +41,25 @@ export class TicketOrchestrator {
    * about them. In `agent` mode the prompt names the repository and the
    * comment ids, and the agent fetches the comments itself with `gh`.
    */
-  private promptContext(issueNumber: number): PromptContext {
+  private promptContext(
+    item: ProjectItem,
+    branchName: string,
+    prNumber?: number,
+  ): PromptContext {
+    const { config } = this.deps;
     return {
-      mode: this.deps.config.commentDelivery,
-      owner: this.deps.config.githubOwner,
-      repo: this.deps.config.githubRepo,
-      issueNumber,
+      mode: config.commentDelivery,
+      owner: config.githubOwner,
+      repo: config.githubRepo,
+      issueNumber: item.issueNumber,
+      branchName,
+      baseBranch: config.baseBranch,
+      // Outside the repository on purpose: the description must not end up in
+      // the diff.
+      prBodyPath: join(config.dataDir, 'pr-bodies', `issue-${item.issueNumber}.md`),
+      prNumber,
+      prOpening: config.prOpening,
+      ghAvailable: config.ghAvailable,
     };
   }
 
@@ -145,7 +160,11 @@ export class TicketOrchestrator {
     try {
       const assetsDir = join(config.dataDir, 'assets', `issue-${item.issueNumber}`);
       const assets = await issues.downloadAssets(item.issueBody, assetsDir);
-      const prompt = buildInitialPrompt(item, branchName, assets);
+      const prompt = buildInitialPrompt(
+        item,
+        assets,
+        this.promptContext(item, branchName),
+      );
       const outcome = await opencode.sendPromptAndWait(sessionId, worktreePath, prompt, assets);
       await this.handleBuildOutcome(item, sessionId, worktreePath, branchName, outcome);
     } catch (err) {
@@ -193,7 +212,7 @@ export class TicketOrchestrator {
       const prompt = buildHumanReplyPrompt(
         newComments,
         assets,
-        this.promptContext(item.issueNumber),
+        this.promptContext(item, branchName, record.prNumber ?? undefined),
       );
       const outcome = await opencode.sendPromptAndWait(sessionId, worktreePath, prompt, assets);
       await this.handleBuildOutcome(item, sessionId, worktreePath, branchName, outcome);
@@ -258,20 +277,33 @@ export class TicketOrchestrator {
           `Issue #${item.issueNumber}: ${item.issueTitle}`,
         ));
 
-      const prompt = buildReviewFindingsPrompt(pr.number, this.promptContext(item.issueNumber), {
-        headSha: pr.head.sha,
-        botLogin: config.reviewBotLogins.join(', '),
-        summaryCommentId: review.summaryCommentId,
-        inlineComments: review.inlineComments,
-        summary: review.summary,
-      });
-      await opencode.sendPromptAndWait(sessionId, record.worktreePath, prompt);
+      const prompt = buildReviewFindingsPrompt(
+        pr.number,
+        this.promptContext(item, record.branchName, pr.number),
+        {
+          headSha: pr.head.sha,
+          botLogin: config.reviewBotLogins.join(', '),
+          summaryCommentId: review.summaryCommentId,
+          inlineComments: review.inlineComments,
+          summary: review.summary,
+        },
+      );
+      const outcome = await opencode.sendPromptAndWait(sessionId, record.worktreePath, prompt);
 
       await worktrees.ensureCommittedAndPushed(
         record.worktreePath,
         record.branchName,
         `fix: address review feedback for #${item.issueNumber}`,
       );
+
+      if (config.prOpening === 'daemon' && outcome.status === 'ready_for_review') {
+        // The daemon owns the description in this mode, so it has to keep it
+        // current: this round's report is appended to it.
+        const currentPr = await prs.getPR(pr.number);
+        await prs.updatePR(pr.number, {
+          body: this.appendReport(currentPr.body ?? '', outcome, item.issueNumber),
+        });
+      }
 
       store.patch(item.issueNumber, {
         sessionId,
@@ -340,7 +372,7 @@ export class TicketOrchestrator {
     branchName: string,
     outcome: OpenCodeTicketStatus,
   ): Promise<void> {
-    const { store, projects, issues, prs, worktrees } = this.deps;
+    const { store, projects, issues, prs, worktrees, config } = this.deps;
 
     if (outcome.status === 'needs_input') {
       console.log(`[in-progress] #${item.issueNumber} needs input`);
@@ -357,37 +389,118 @@ export class TicketOrchestrator {
       return;
     }
 
-    // ready_for_review or unknown -> verify committed & pushed, then open PR
+    // ready_for_review or unknown -> verify committed & pushed, then resolve the PR
+    const agentTitle =
+      outcome.status === 'ready_for_review' ? outcome.prTitle?.trim() : undefined;
     const { pushed } = await worktrees.ensureCommittedAndPushed(
       worktreePath,
       branchName,
-      `feat: resolve #${item.issueNumber} - ${item.issueTitle}`,
+      agentTitle || `feat: resolve #${item.issueNumber}`,
     );
 
-    const prTitle =
-      outcome.status === 'ready_for_review' && outcome.prTitle
-        ? outcome.prTitle
-        : item.issueTitle;
-    const prSummary =
-      outcome.status === 'ready_for_review' && outcome.prSummary
-        ? outcome.prSummary
-        : 'Automated implementation by OpenCode.';
+    // Who owns the pull request:
+    //
+    //   PR_OPENING=agent  - the agent opens it with `gh pr create`, so the
+    //     title and the description are its own words and it can edit them
+    //     later. The branch name is deterministic, so find the PR it opened
+    //     by branch rather than trusting the number it reported.
+    //   PR_OPENING=daemon - the daemon owns it: it creates the PR, and
+    //     updates it on later rounds. It never adopts one the agent opened.
+    const existing = await prs.findOpenPRByBranch(branchName);
+    const title = agentTitle || `feat: resolve #${item.issueNumber}`;
+    let prNumber: number;
+    let prUrl: string;
 
-    const pr = await prs.createOrGetPR(
-      branchName,
-      this.deps.config.baseBranch,
-      prTitle,
-      `${prSummary}\n\nCloses #${item.issueNumber}`,
-    );
+    if (existing && config.prOpening === 'agent') {
+      prNumber = existing.number;
+      prUrl = existing.html_url;
+      if (
+        outcome.status === 'ready_for_review' &&
+        outcome.prNumber &&
+        outcome.prNumber !== existing.number
+      ) {
+        console.warn(
+          `[in-progress] #${item.issueNumber}: agent reported PR #${outcome.prNumber}, but the branch has PR #${existing.number}`,
+        );
+      }
+      // The agent writes the description, so make sure it closes the issue.
+      await this.ensurePrClosesIssue(existing.number, existing.body ?? '', item.issueNumber);
+      console.log(`[in-progress] Agent opened PR #${prNumber} (${prUrl}) for #${item.issueNumber}`);
+    } else if (existing) {
+      // daemon mode, and the PR is one we own: update it with the agent's
+      // latest report instead of leaving the first one stale.
+      await prs.updatePR(existing.number, {
+        title,
+        body: this.appendReport(existing.body ?? '', outcome, item.issueNumber),
+      });
+      prNumber = existing.number;
+      prUrl = existing.html_url;
+      console.log(`[in-progress] Updated PR #${prNumber} (${prUrl}) for #${item.issueNumber}`);
+    } else {
+      // No pull request on the branch. In agent mode the agent was supposed
+      // to open one; open it here so completed work is never left without a
+      // PR, using the agent's own report as the description.
+      const created = await prs.createOrGetPR(
+        branchName,
+        config.baseBranch,
+        title,
+        buildPrBody(outcome, item.issueNumber),
+      );
+      prNumber = created.number;
+      prUrl = created.url;
+      console.log(
+        `[in-progress] Opened PR #${prNumber} (${prUrl}) for #${item.issueNumber}${
+          config.prOpening === 'agent' ? ' (the agent did not open one)' : ''
+        }`,
+      );
+    }
 
-    console.log(`[in-progress] Opened/updated PR #${pr.number} (${pr.url}) for #${item.issueNumber}`);
     store.patch(item.issueNumber, {
       lane: LANES.IN_REVIEW,
       sessionId,
-      prNumber: pr.number,
+      prNumber,
       lastPushedAt: pushed ? new Date().toISOString() : new Date().toISOString(),
     });
     await projects.moveItemToLane(item.itemId, LANES.IN_REVIEW);
+  }
+
+  /**
+   * The daemon's own pull request description, kept current as the work goes
+   * on: the first report describes the change, and each later round appends
+   * what it fixed.
+   */
+  private appendReport(
+    current: string,
+    outcome: OpenCodeTicketStatus,
+    issueNumber: number,
+  ): string {
+    const round = (this.deps.store.get(issueNumber)?.reviewIterations ?? 0) + 1;
+    return appendPrReport(current, outcome, issueNumber, round);
+  }
+
+  /**
+   * The description has to close the issue, or the ticket stays open after the
+   * PR merges. The agent writes the description, so this only checks for the
+   * closing keyword and appends the line when it is missing.
+   */
+  private async ensurePrClosesIssue(
+    prNumber: number,
+    body: string,
+    issueNumber: number,
+  ): Promise<void> {
+    const closes = new RegExp(
+      `\\b(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))\\s*:?\\s*#${issueNumber}\\b`,
+      'i',
+    );
+    if (closes.test(body)) return;
+
+    const { prs } = this.deps;
+    const pr = await prs.getPR(prNumber);
+    const current = (pr.body ?? '').trim();
+    await prs.updatePR(prNumber, {
+      body: `${current}${current ? '\n\n' : ''}Closes #${issueNumber}`,
+    });
+    console.log(`[in-review] Appended "Closes #${issueNumber}" to PR #${prNumber}`);
   }
 
   private async escalateError(item: ProjectItem, err: unknown): Promise<void> {
