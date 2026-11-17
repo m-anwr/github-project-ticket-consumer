@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 
 export interface HttpJsonResponse {
   status: number;
@@ -14,6 +15,29 @@ export interface PostJsonOptions {
    * 0 (the default) means "no timeout".
    */
   timeoutMs?: number;
+}
+
+type Transport = {
+  request(
+    options: http.RequestOptions,
+    callback: (res: http.IncomingMessage) => void,
+  ): http.ClientRequest;
+};
+
+/**
+ * Pick the transport that matches the URL's scheme.
+ *
+ * `OPENCODE_SERVER_URL` may point at an OpenCode server behind TLS, so the
+ * request has to follow the scheme: `http.request` rejects an `https://` URL
+ * with `ERR_INVALID_PROTOCOL` before it ever opens a socket, which would
+ * fail the prompt outright on a TLS deployment.
+ */
+export function transportFor(protocol: string): Transport {
+  if (protocol === 'http:') return http;
+  if (protocol === 'https:') return https;
+  throw new Error(
+    `Unsupported protocol "${protocol}" in the OpenCode server URL - use http:// or https://`,
+  );
 }
 
 /**
@@ -42,11 +66,13 @@ export function postJson(options: PostJsonOptions): Promise<HttpJsonResponse> {
   const payload = Buffer.from(JSON.stringify(body));
 
   return new Promise<HttpJsonResponse>((resolve, reject) => {
-    const req = http.request(
+    const transport = transportFor(target.protocol);
+    const req = transport.request(
       {
         protocol: target.protocol,
         hostname: target.hostname,
-        port: target.port,
+        // An empty port means "the default for this scheme" (80 / 443).
+        port: target.port || undefined,
         path: `${target.pathname}${target.search}`,
         method: 'POST',
         headers: {

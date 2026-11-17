@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import https from 'node:https';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
-import { postJson } from '../src/opencode/http.ts';
+import { postJson, transportFor } from '../src/opencode/http.ts';
 
 /**
  * `postJson` replaces `fetch` for the one OpenCode request that is allowed to
@@ -103,5 +105,35 @@ describe('postJson', () => {
     } finally {
       server.close();
     }
+  });
+
+  it('picks the transport that matches the URL scheme', () => {
+    assert.equal(transportFor('http:'), http);
+    assert.equal(transportFor('https:'), https);
+    assert.throws(() => transportFor('ftp:'), /Unsupported protocol/);
+  });
+
+  it('does not reject an https:// URL with ERR_INVALID_PROTOCOL', async () => {
+    // Port 1 is closed, so this fails at connect time. What matters is that
+    // it fails THERE and not with ERR_INVALID_PROTOCOL, which `http.request`
+    // throws before it ever opens a socket.
+    await assert.rejects(
+      postJson({ url: 'https://127.0.0.1:1/message', body: {} }),
+      (err: NodeJS.ErrnoException) => {
+        assert.notEqual(err.code, 'ERR_INVALID_PROTOCOL');
+        assert.ok(
+          ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENOTFOUND'].includes(err.code ?? ''),
+          `expected a connection error, got ${err.code}: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it('rejects an unsupported scheme with a clear message', async () => {
+    await assert.rejects(
+      postJson({ url: 'ftp://example.com/message', body: {} }),
+      /Unsupported protocol "ftp:"/,
+    );
   });
 });
