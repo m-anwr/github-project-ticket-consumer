@@ -29,7 +29,7 @@ stateDiagram-v2
 ## Features
 
 - **Zero external npm dependencies**: Runs directly on Node.js `>= 22.18.0` using native TypeScript execution, `node:sqlite`, `fetch`, and `node:test`.
-- **OpenCode v1 & v2 compatible**: Automatically detects OpenCode v1 (`/session`, `/session/{id}/message`, `/event`) and v2 (`/api/session`, `/api/session/{id}/prompt`, `/api/event`) servers.
+- **OpenCode v1 & v2 compatible**: Automatically detects OpenCode v1 (`/session`, `/session/{id}/message`, `/event`) and v2 (`/api/session`, `/api/session/{id}/prompt`, `/api/event`) servers. Detection probes each dialect's message endpoint with a dialect-valid body and classifies by the error envelope, so a 1.x server that serves **both** surfaces is still detected correctly.
 - **Git worktree isolation**: Each active ticket runs in its own worktree under `DATA_DIR/worktrees/issue-<number>`, allowing multiple tickets to be in `Needs input` or `In review` simultaneously without branch conflicts.
 - **SQLite state persistence**: Resumes cleanly across restarts (`DATA_DIR/state.db`).
 
@@ -106,9 +106,26 @@ ExecStart=/usr/bin/node src/index.ts
 Restart=always
 RestartSec=5
 
+# systemd system units do not set HOME. The `gh` credential helper (used by
+# `git fetch`/`git push` against github.com) needs HOME to find
+# ~/.config/gh/hosts.yml; without it git fails with
+# "could not read Username for 'https://github.com'".
+Environment=HOME=/root
+
 [Install]
 WantedBy=multi-user.target
 ```
+
+The `.env` file is read from the working directory at startup, so keep it
+readable only by the service user:
+
+```bash
+chmod 600 /opt/github-project-ticket-consumer/.env
+```
+
+If the OpenCode server listens on a bridge address rather than `127.0.0.1`
+(containers commonly bind only the bridge IP), set `OPENCODE_SERVER_URL`
+accordingly — for example `http://172.19.0.1:4096`.
 
 ## Tests
 
