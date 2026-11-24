@@ -370,10 +370,14 @@ export class OpenCodeClient {
             'Content-Type': 'application/json',
             ...this.authHeaders(),
           },
-          // The v2 prompt endpoint takes a PromptInput: `{ prompt: { text } }`.
-          // A flat `{ text }` body is rejected with "Missing key at prompt".
+          // The v2 prompt endpoint takes the text at the TOP level: `{ text }`.
+          //
+          // The preview API took `{ prompt: { text } }`, and OpenCode 2.4.1
+          // rejects that with `Missing key at ["text"]` -- the schema wants
+          // `text` on the root object, so the nesting has to go the other
+          // way round.
           body: JSON.stringify({
-            prompt: { text: promptText },
+            text: promptText,
           }),
         });
 
@@ -566,15 +570,17 @@ export class OpenCodeClient {
 
     // The two dialects expose different routes and different body keys:
     //   - v1: POST /session/{sessionID}/permissions/{permissionID} {response}
-    //   - v2: POST /api/session/{sessionID}/permission/{requestID}/reply {reply}
+    //   - v2: POST /api/session/{sessionID}/permission/{requestID}/reply {decision}
     // The v1 route is `/permissions` (plural) with no `/reply` suffix; the
     // old `/permission/{id}/reply` path is not served and silently falls
     // through to the SPA, so the approval would never be registered.
+    // The v2 body key is `decision` (values `once` / `always` / `reject`);
+    // `reply` and `allow` are both rejected.
     const isV2 = prefix === '/api';
     const url = isV2
       ? this.buildUrl(`/api/session/${sessionId}/permission/${requestId}/reply`, directory)
       : this.buildUrl(`/session/${sessionId}/permissions/${requestId}`, directory);
-    const body = isV2 ? { reply: 'once' } : { response: 'once' };
+    const body = isV2 ? { decision: 'once' } : { response: 'once' };
 
     const res = await fetch(url, {
       method: 'POST',
