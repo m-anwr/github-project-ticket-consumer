@@ -240,7 +240,7 @@ describe('OpenCodeClient', () => {
         req.on('data', (c) => chunks.push(c));
         req.on('end', () => {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-            prompt?: { text?: string };
+            text?: string;
           };
           receivedPromptBody = body;
           receivedText = body.text || '';
