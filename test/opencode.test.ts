@@ -17,7 +17,11 @@ import { OpenCodeClient } from '../src/opencode/client.ts';
  *     with `{ response: 'once' }`. The `/permission/{id}/reply` path is not
  *     served at all.
  *   - v1 probe answer: `{"name":"UnknownError", ...}` for an unknown session.
- *   - v2 prompt body: `{ prompt: { text } }`, never a flat `{ text }`.
+ *   - v2 prompt body: `{ text }` at the top level. The preview API took
+ *     `{ prompt: { text } }`, but 2.4.1 rejects that with
+ *     `Missing key at ["text"]`.
+ *   - v2 permission reply body: `{ decision: 'once' }` (`reply` and `allow`
+ *     are both rejected).
  *   - v2 model ref: `{ model: { id, providerID } }`.
  *   - v2 directory selection: `location: { directory }` in the create body.
  *   - v2 probe answer: `{"_tag":"InvalidRequestError", ...}`.
@@ -179,10 +183,10 @@ describe('OpenCodeClient', () => {
     }
   });
 
-  it('speaks the v2 dialect: /api/session, /api/session/:id/prompt with {prompt:{text}}', async () => {
+  it('speaks the v2 dialect: /api/session, /api/session/:id/prompt with {text}', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'opencode-v2-test-'));
     let receivedText = '';
-    let receivedPromptBody: { prompt?: { text?: string } } = {};
+    let receivedPromptBody: { text?: string } = {};
     let modelSwitched = false;
     let createBody: { location?: { directory?: string } } = {};
 
@@ -239,7 +243,7 @@ describe('OpenCodeClient', () => {
             prompt?: { text?: string };
           };
           receivedPromptBody = body;
-          receivedText = body.prompt?.text || '';
+          receivedText = body.text || '';
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(
             JSON.stringify({
@@ -281,8 +285,8 @@ describe('OpenCodeClient', () => {
       assert.deepEqual(createBody, { location: { directory: dir } });
 
       const result = await client.sendPromptAndWait(sessionId, dir, 'Build v2');
-      // The prompt text must be nested under `prompt`.
-      assert.deepEqual(receivedPromptBody, { prompt: { text: 'Build v2' } });
+      // The prompt text must be at the top level of the body.
+      assert.deepEqual(receivedPromptBody, { text: 'Build v2' });
       assert.equal(receivedText, 'Build v2');
       assert.deepEqual(result, {
         status: 'needs_input',
