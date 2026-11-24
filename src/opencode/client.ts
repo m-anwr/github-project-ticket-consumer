@@ -279,15 +279,27 @@ export class OpenCodeClient {
       directory,
       abortController.signal,
       (event) => {
+        // The two dialects wrap the event payload differently:
+        //   - v1: `{ type, properties: { ... } }`
+        //   - v2: `{ id, created, type, location, data: { ... } }`
+        // The event NAMES are mostly shared (permission.asked, session.idle,
+        // session.status), but the envelope key is not, and two names changed
+        // in v2: the session error became `session.execution.failed`, and the
+        // tool call became `session.tool.input.started`.
+        const payload =
+          ((event as { data?: Record<string, unknown> }).data ??
+            (event as { properties?: Record<string, unknown> }).properties ??
+            {}) as Record<string, unknown>;
+
         if (event.type === 'message.updated') {
-          const info = event.properties?.info as
+          const info = payload.info as
             | { id?: string; role?: string; sessionID?: string }
             | undefined;
           if (info?.sessionID === sessionId && info.role === 'assistant' && info.id) {
             latestAssistantMessageId = info.id;
           }
         } else if (event.type === 'message.part.updated') {
-          const part = event.properties?.part as
+          const part = payload.part as
             | (MessagePart & {
                 name?: string;
                 tool?: string;
@@ -317,30 +329,59 @@ export class OpenCodeClient {
               collectedTextParts.set(part.id, part.text);
             }
           }
+        } else if (event.type === 'session.tool.input.started') {
+          // The v2 tool event. `data.name` is the tool name and `data.id` is
+          // the call id -- the same shape of information the v1
+          // `message.part.updated` tool part carried.
+          const call = payload as { id?: string; name?: string; sessionID?: string };
+          if (call.sessionID === sessionId && call.id && !loggedToolCalls.has(call.id)) {
+            loggedToolCalls.add(call.id);
+            log.info(
+              'opencode',
+              `[${sessionId}] Running tool: ${call.name || 'unknown'}`,
+            );
+          }
         } else if (event.type === 'permission.updated' || event.type === 'permission.asked') {
           // The live server emits `permission.asked` with `properties.id`
           // holding the permission id (e.g. "per_..."), `properties.sessionID`
-          // and `properties.permission` naming the permission type.
-          const perm = event.properties as
-            | { id?: string; sessionID?: string; title?: string; permission?: string }
+          // and `properties.permission` naming the permission type. In v2 the
+          // same fields live under `data`, and the type is called `action`
+          // with the human-readable text in `message`.
+          const perm = payload as
+            | {
+                id?: string;
+                sessionID?: string;
+                title?: string;
+                permission?: string;
+                action?: string;
+                message?: string;
+              }
             | undefined;
           if (perm?.sessionID === sessionId && perm.id) {
-            void this.replyPermission(prefix, sessionId, perm.id, directory, perm.title || perm.permission);
+            void this.replyPermission(
+              prefix,
+              sessionId,
+              perm.id,
+              directory,
+              perm.title || perm.message || perm.permission || perm.action,
+            );
           }
         } else if (event.type === 'session.idle') {
-          const props = event.properties as { sessionID?: string } | undefined;
+          const props = payload as { sessionID?: string } | undefined;
           if (!props?.sessionID || props.sessionID === sessionId) {
             resolveIdle();
           }
         } else if (event.type === 'session.status') {
-          const props = event.properties as
+          const props = payload as
             | { sessionID?: string; status?: { type?: string } }
             | undefined;
           if (props?.sessionID === sessionId && props.status?.type === 'idle') {
             resolveIdle();
           }
-        } else if (event.type === 'session.error') {
-          const props = event.properties as
+        } else if (event.type === 'session.error' || event.type === 'session.execution.failed') {
+          // v1 called it `session.error`; v2 renamed it to
+          // `session.execution.failed`. Both carry `{ sessionID, error }`.
+          const props = payload as
             | { sessionID?: string; error?: { name?: string; message?: string } }
             | undefined;
           if (!props?.sessionID || props.sessionID === sessionId) {
