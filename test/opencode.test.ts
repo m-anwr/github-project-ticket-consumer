@@ -298,4 +298,148 @@ describe('OpenCodeClient', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('reads the v2 event envelope: payload under data, not properties', async () => {
+    // v2 frames the event as { id, created, type, location, data: {...} }
+    // while v1 used { type, properties: {...} }. The event names are mostly
+    // shared, but the envelope key is not -- reading `properties` under v2
+    // silently finds nothing, so the permission is never approved.
+    const dir = mkdtempSync(join(tmpdir(), 'opencode-v2-events-test-'));
+    let permissionReplied = false;
+    let permissionBody: { decision?: string } = {};
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+
+      if (req.method === 'POST' && url.pathname === '/session/probe-does-not-exist/message') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<html></html>');
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/session/probe-does-not-exist/prompt') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(V2_PROBE_ERROR);
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/session') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: { id: 'ses_v2', title: 'Test' } }));
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/session/ses_v2/model') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/event') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        // The v2 envelope: payload under `data`.
+        for (const frame of [
+          {
+            id: 'evt_1',
+            created: 1,
+            type: 'session.tool.input.started',
+            data: { sessionID: 'ses_v2', id: 'call_1', name: 'bash' },
+          },
+          {
+            id: 'evt_2',
+            created: 2,
+            type: 'permission.asked',
+            data: {
+              id: 'per_1',
+              sessionID: 'ses_v2',
+              action: 'bash',
+              message: 'Run ls',
+            },
+          },
+        ]) {
+          res.write(`data: ${JSON.stringify(frame)}\n\n`);
+        }
+        req.on('close', () => res.end());
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/session/ses_v2/permission/per_1/reply') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          permissionBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          permissionReplied = true;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end('true');
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/session/ses_v2/prompt') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          // The live server acknowledges with the USER message.
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              data: { id: 'msg_1', type: 'user', payload: { text: 'Build v2' } },
+            }),
+          );
+        });
+        return;
+      }
+
+      if (req.method === 'GET' && url.pathname === '/api/session/ses_v2/message') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            data: [
+              {
+                id: 'msg_2',
+                type: 'assistant',
+                content: [{ type: 'text', text: 'Built it.' }],
+              },
+              { id: 'msg_3', type: 'idle', time: { created: Date.now() } },
+            ],
+          }),
+        );
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('Expected TCP address');
+
+    try {
+      const client = new OpenCodeClient({
+        serverUrl: `http://127.0.0.1:${addr.port}`,
+        providerId: 'kilo',
+        modelId: 'kilo-auto/efficient',
+      });
+
+      const sessionId = await client.createSession(dir, 'Issue #2');
+      const result = await client.sendPromptAndWait(sessionId, dir, 'Build v2');
+
+      // The permission under `data` must still be found and approved, with
+      // the v2 body key.
+      assert.equal(permissionReplied, true, 'permission.asked under data was not handled');
+      assert.deepEqual(permissionBody, { decision: 'once' });
+
+      // The assistant text comes from the message list, as on the live server.
+      assert.equal(result.rawText, 'Built it.');
+      assert.equal(result.status, 'unknown');
+    } finally {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
