@@ -196,6 +196,11 @@ export class TicketOrchestrator {
       record.sessionId ||
       (await opencode.createSession(worktreePath, `Issue #${item.issueNumber}: ${item.issueTitle}`));
 
+    // The model belongs to the session, not the prompt. A session created
+    // before the provider changed still points at the old model, and the
+    // resumed turn dies with "Model unavailable" before the agent starts.
+    await opencode.ensureSessionModel(sessionId, worktreePath);
+
     store.patch(item.issueNumber, {
       lane: LANES.IN_PROGRESS,
       sessionId,

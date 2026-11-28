@@ -230,25 +230,54 @@ export class OpenCodeClient {
     }
     log.info('opencode', `Created session ${id} (${mode}) in ${directory}`);
 
-    if (mode === 'v2' && this.cfg.providerId && this.cfg.modelId) {
-      // The v2 model endpoint takes a ModelRef: `{ model: { id, providerID } }`.
-      // `id` is the bare model id, without the provider prefix.
-      await fetch(this.buildUrl(`/api/session/${id}/model`, directory), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...this.authHeaders(),
-        },
-        body: JSON.stringify({
-          model: {
-            id: this.cfg.modelId,
-            providerID: this.cfg.providerId,
-          },
-        }),
-      }).catch(() => undefined);
-    }
+    await this.ensureSessionModel(id, directory, mode);
 
     return id;
+  }
+
+  /**
+   * Point a session at the configured model.
+   *
+   * The model is a property of the session, not of the prompt, so a session
+   * created under one provider keeps using it. That bites when the
+   * configured provider changes: a ticket parked in Needs input and resumed
+   * later sends its prompt to the OLD model, and the turn dies with
+   * "Model unavailable" before the agent ever starts.
+   */
+  async ensureSessionModel(
+    sessionId: string,
+    directory: string,
+    knownMode?: 'v1' | 'v2',
+  ): Promise<void> {
+    if (!this.cfg.providerId || !this.cfg.modelId) return;
+    const mode = knownMode ?? (await this.detectMode());
+    if (mode !== 'v2') return;
+
+    // The v2 model endpoint takes a ModelRef: `{ model: { id, providerID } }`.
+    // `id` is the bare model id, without the provider prefix.
+    const res = await fetch(this.buildUrl(`/api/session/${sessionId}/model`, directory), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authHeaders(),
+      },
+      body: JSON.stringify({
+        model: {
+          id: this.cfg.modelId,
+          providerID: this.cfg.providerId,
+        },
+      }),
+    }).catch((err) => {
+      log.warn('opencode', `Failed to set the model on session ${sessionId}`, err);
+      return null;
+    });
+
+    if (res && !res.ok) {
+      log.warn(
+        'opencode',
+        `Setting the model on session ${sessionId} failed (${res.status}): ${await res.text()}`,
+      );
+    }
   }
 
   async sendPromptAndWait(
