@@ -63,6 +63,7 @@ describe('TicketOrchestrator', () => {
         status: 'needs_input',
         question: 'Which color?',
       };
+      const modelSetOn: string[] = [];
       let reviewState: KiloCodeReviewEvaluation = {
         status: 'has_findings',
         summary: '1 Issue Found',
@@ -147,6 +148,9 @@ describe('TicketOrchestrator', () => {
         opencode: {
           createSession: async () => 'ses_7',
           sendPromptAndWait: async () => opencodeOutcome,
+          ensureSessionModel: async (sessionId: string) => {
+            modelSetOn.push(sessionId);
+          },
         } as never,
       });
 
@@ -175,6 +179,9 @@ describe('TicketOrchestrator', () => {
       await orchestrator.waitForIdle();
       assert.equal(currentLane, LANES.IN_REVIEW);
       assert.equal(store.get(7)?.prNumber, 55);
+      // The model belongs to the session: a resumed session has to be
+      // re-pointed at the configured model, or it keeps the old one.
+      assert.deepEqual(modelSetOn, ['ses_7']);
 
       // 3. In review with Kilo Code findings -> OpenCode fixes & pushes
       await orchestrator.pollOnce();
